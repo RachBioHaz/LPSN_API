@@ -1,0 +1,851 @@
+---
+title: "LPSN taxonomic alignment:"
+author: "Rachele Gore"
+date: "2026-04-12"
+output:
+  html_document: 
+    theme: sandstone
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 6
+    highlight: tango
+    fig_retina: 1
+    fig_caption: yes
+    table_caption: yes
+    keep_md: yes
+    df_print: paged
+    self_contained: true
+  html_notebook:
+    theme: sandstone
+    toc_depth: 6
+    highlight: tango
+    fig_caption: yes
+    table_caption: yes
+  pdf_document:
+    dev: cairo_pdf
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+R Language
+
+```{r r_version, eval=FALSE}
+cat("Current version: ", version$version.string, "\n")
+## Current version:  R version 4.5.2 (2025-10-31 ucrt) 
+```
+
+
+
+
+# Project Details
+
+AGRF taxonomic assignment used multiple databases of different currency. Has resulted in 
+many incorrect lineages due to older databases, use of synonyms, or multiplication of names appended at different taxonomic levels with alpha codes to indicate the databases used for naming assignment. 
+
+Taxonomic lineages will be fixed to reflect current names/lineages using the List of Prokaryotic names with Standing in Nomenclature (LPSN) database.  
+  - Synonyms will be replaced with the correct names, if no correct name assigned, either pro-correct or preferred name will be used.   
+  - Where taxonomic level classification has not been officially allocated yet, a flag will indicate the level has no official assignment.  
+  - Where a temporary name, often an alphanumeric code, is used, that temporary name will have the last classified level as a prefix
+  - Where lower levels were not able to be assigned to a sequence, the last classified level will be copied across to fill lineage
+
+An API function in R was created to query the database. Where the API was not able to identify the correct name, manual curation will be used.
+
+## Bioinformatic info (AGRF):   
+_AGRF files found in directory:_  
+XXXXX
+
+_AGRF taxonomy file used_  
+
+path: "XXXX/best_taxonomy_withDB.tsv"  
+
+
+_Primer information_  
+Sequences were amplified using universal bacterial primers:  
+F27 (5’- AGRGTTYGATYMTGGCTCAG −3’)   
+R1492 (5’- AAGTCGTAACAAGGTARCY −3’)  
+Reference: (https://doi.org/10.1128/AEM.64.8.3075-3078.1998).  
+
+__Extract from AGRF HiFi Full-length 16S Analysis Report:__  
+
+_Project ID:_  
+_Analysis date:_ 
+
+__Summary QC statistics__  
+ 
+
+_Classification using VSEARCH with a single database_  
+
+ 
+
+_Classification using Naive Bayes classifier with SILVA, GTDB and RefSeq + RDP_  
+ 
+
+_Overall reads filtering and number of full-length reads_   
+
+
+# Set up 
+
+```{r, eval = FALSE}
+# Install package if needed and load LPSN API library
+# install.packages("LPSN", repos="http://R-Forge.R-project.org")
+
+library(LPSN)
+# increase max print so You can view full spp and genera lists if needed:
+options(max.print = 2000) 
+
+## check wd
+getwd()
+#[1] "C:/Scratch/LPSN_API"
+
+
+## Requires functions file
+
+source("LPSN_API_functions.R")
+
+```
+
+
+# Prepare data for LPSN API
+
+## Import data
+
+```{r, eval = FALSE}
+
+## import taxonomy file
+best_taxonomy <- readr::read_tsv(
+  file = "XXXX/best_taxonomy_withDB.tsv",
+  col_names = TRUE,
+  trim_ws = TRUE
+  )
+
+## view data - truncated to max of 10 characters
+
+subset <- head(best_taxonomy)
+
+# Truncate each cell to 10 characters
+subset[] <- lapply(subset, function(col) {
+  # Convert to character, then truncate
+  substr(as.character(col), 1, 10)
+})
+
+# Print result
+print(subset, quote = FALSE, right = FALSE)
+
+
+
+
+## full taxonomy lineage in one cell with level prefix and separated by ';'
+
+```
+
+
+__Summary__
+
+```{r, eval = FALSE}
+
+taxonomy <- best_taxonomy |>
+  dplyr::select("Feature ID", "Taxon", "Confidence") |> 
+  dplyr::rename(id = "Feature ID") |>
+  dplyr::mutate(Confidence = as.numeric(Confidence))
+
+
+
+# view data (shorten length of data to 10 characters)
+subset <- head(taxonomy[, 1:3], 8)
+
+# Truncate each cell to 10 characters
+subset[] <- lapply(subset, function(col) {
+  # Convert to character, then truncate
+  substr(as.character(col), 1, 10)
+})
+
+# Print result
+print(subset, quote = FALSE, right = FALSE)
+
+
+
+
+
+purrr::map(taxonomy, class)
+
+
+
+
+# summary stats
+summary(taxonomy$Confidence)
+
+
+
+names(taxonomy)
+
+
+
+nrow(taxonomy)
+
+
+
+
+colSums(is.na(taxonomy))
+
+
+
+
+```
+
+
+
+## Format taxonomy file
+
+  - re-format the taxonomy file to split the taxonomy into columns
+  - remove the confidence column
+  - remove any leading or trailing whites paces - imported file has leading white space
+
+
+```{r}
+taxtable <- taxonomy |>
+  tibble::as_tibble() |>
+  dplyr::select(-Confidence) |>
+  tidyr::separate(Taxon,
+           sep = ";",
+           c(
+             "Domain",
+             "Phylum",
+             "Class",
+             "Order",
+             "Family",
+             "Genus",
+             "Species"
+           )
+  ) |> 
+  tibble::column_to_rownames("id") |>
+  dplyr::mutate(across(where(is.character), stringr::str_trim)) |>
+  as.matrix()
+
+# check variable names
+colnames(taxtable)
+
+s
+
+
+# Check data
+taxtable[56:66, 1:7]
+
+
+# # export file to csv
+# write.csv(taxtable, "XXX/taxonomy_precleaned.csv", row.names = TRUE)
+# 
+# # save initial taxonomy object to be cleaned
+# saveRDS(taxtable, file = "XXXX/taxtable.precleaned")
+ 
+
+```
+
+
+
+### Remove taxonomic prefix
+
+Load utility file and use function to remove taxa level prefixes
+Working directory: "LPSN_API"
+Function path: "LPSN_API/LPSN_API_functions.R"
+
+```{r}
+
+# load object
+taxtable <- readRDS(file = "agrf_0098/taxtable.precleaned")
+
+df <- as.data.frame(taxtable)
+
+
+# load function file
+source("LPSN_API_functions.R")
+
+
+# remove prefix from taxa names
+df <- remove_taxa_prefix(df)
+
+# Check data
+df[56:66, 1:7]
+
+
+
+colnames(df)
+
+
+
+
+
+# Apply str_trim to all character columns
+df_clean <- df |>
+  dplyr::mutate(across(where(is.character), stringr::str_trim))
+
+# Check data
+df_clean[56:66, 1:7]
+
+
+
+## save object with prefixes removed
+# saveRDS(df_clean, file = "XXXX/taxtable.precleaned.noprefix")
+
+```
+
+
+
+_Prepare data for taxonomy assignment_
+
+Check for mitochondria and chloroplasts. Should already be removed - just a check
+
+```{r}
+
+## load object to be cleaned
+df_clean <- readRDS(file = "agrf_0098/taxtable.precleaned.noprefix")
+
+## check for mitochondria and chloroplasts
+# count the instances of mito and chloroplast
+counts <- df_clean |>
+  # ensure everything is character (so str_detect works on numeric cols too)
+  dplyr::mutate(across(everything(), as.character)) |>
+  # summarise across all columns
+  dplyr::summarise(
+    dplyr::across(
+      .cols = everything(),
+      .fns = list(
+        mito_count   = ~ sum(stringr::str_detect	(., "mitochondria"), na.rm = TRUE),
+        chloro_count = ~ sum(stringr::str_detect	(., "chloroplast"), na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+
+
+print(t(counts))
+
+#                      [,1]
+# Domain_mito_count       0
+# Domain_chloro_count     0
+# Phylum_mito_count       0
+# Phylum_chloro_count     0
+# Class_mito_count        0
+# Class_chloro_count      0
+# Order_mito_count        0
+# Order_chloro_count      0
+# Family_mito_count       0
+# Family_chloro_count     0
+# Genus_mito_count        0
+# Genus_chloro_count      0
+# Species_mito_count      0
+# Species_chloro_count    0
+
+```
+
+
+_Check data structure_
+
+```{r}
+
+# number of empty cells for each taxonomic level
+# species level information is not accurate 
+# - lots of place holder names
+
+df_clean |>
+  dplyr::summarise(across(everything(), ~ sum(is.na(.x) | .x == "")))
+
+0
+
+
+
+```
+
+
+### Remove underscores and orphaned 1 and 2 letter codes
+
+LPSN does not contain place holder names (numbers and letters). Need to clean up the taxa names that are only made up of letters and remove suffixes added by AGRF.
+
+Any taxa names with numbers will need manual curation, so these are ignored.
+
+```{r}
+
+colnames(df_clean)
+# 
+
+
+# the number of rows should remain the same
+nrow(df_clean)
+# 
+
+
+## remove underscores and remove single and double orphaned letters
+
+df_trimmed <- df_clean |>
+  dplyr::mutate(dplyr::across(
+    c(Domain, Phylum, Class, Order, Family, Genus, Species),
+    ~ ifelse(
+      stringr::str_detect(.x, "^[^0-9]+$"),  # TRUE only if NO numbers anywhere
+      .x |>
+        stringr::str_replace_all("_", " ") |>
+        stringr::str_remove_all("\\b[A-Za-z]{1,2}\\b") |>
+        stringr::str_squish(),
+      .x  # leave untouched if ANY number is present
+    )
+  ))
+
+nrow(df_trimmed)
+# 
+
+head(df_trimmed)
+
+
+
+## remove any single string in species column
+## removes things like species name of soil or bacterium
+df_trimmed$Species <- (function(x) {
+  x <- base::trimws(base::as.character(x))
+  counts <- base::lengths(base::strsplit(x, "\\s+"))
+  base::is.na(x) <- (counts < 2)
+  base::return(x)
+  })(df_trimmed$Species)
+
+nrow(df_trimmed)
+# 
+
+
+
+
+
+## remove orphaned characters
+# Exiguobacterium A sp001275385, becomes Exiguobacterium sp001275385
+# Ensifer A adhaerens A, becomes Ensifer adhaerens
+
+# df_trimmed$Species <- df_trimmed$Species |>
+#   (\(s) {
+#     # 1. Replace " UpperCase " with a single space
+#     # Matches: space, any single uppercase letter, space
+#     s <- base::gsub(" [A-Z] ", " ", s)
+#     
+#     # 2. Remove trailing " UpperCase"
+#     # Matches: space, uppercase letter at the end of the string ($)
+#     s <- base::gsub(" [A-Z]$", "", s)
+#     
+#     base::return(s)
+#   })()
+
+# remove single and double letter orphans
+# letters are used as database identifiers and are not valid 
+
+df_trimmed$Species <- df_trimmed$Species |> (\(s) {
+  #  Remove isolated single or double uppercase letters (e.g., " A " or " AB ")
+  # Matches: space, 1 to 2 uppercase letters, followed by a space
+  s <- base::gsub(" [A-Z]{1,2} ", " ", s)
+  
+  # Remove trailing single or double uppercase letters (e.g., " A" or " AB" at end)
+  # Matches: space, 1 to 2 uppercase letters, at the end of the string ($)
+  s <- base::gsub(" [A-Z]{1,2}$", "", s)
+  
+  # 3. Clean up any resulting double spaces and trim
+  s <- base::gsub("\\s+", " ", s)
+  s <- base::trimws(s)
+  
+  base::return(s)
+})()
+
+head(df_trimmed$Species)
+
+
+
+nrow(df_trimmed)
+
+
+df_trimmed |>
+  base::subset(base::grepl("^Exiguobacterium", Species)) |> 
+  unique()
+
+
+
+df_trimmed |>
+  base::subset(base::grepl("^Ensifer", Species)) |> 
+  unique()
+
+
+
+nrow(df_trimmed)
+# 
+
+
+## compare species column data to see what's happened
+df_comparison <- base::merge(
+  df_clean["Species"], 
+  df_trimmed["Species"], 
+  by = 0,               # 0 indicates merging by rownames
+  suffixes = c("_original", "_trimmed")
+) |>
+  # Optional: rename the 'Row.names' column back to 'ID' or similar
+  (\(d) {
+    base::colnames(d)[1] <- "ID"
+    base::return(d)
+  })()
+
+df_comparison
+
+```
+
+
+
+```{r}
+
+## save comparison file
+# write.csv(df_comparison, "XXXX/species_trimmed_comparison.csv", row.names = TRUE)
+
+## save the cleaned taxonomy to csv
+# write.csv(df_trimmed, "XXXX/taxonomy_pre_LPSN.csv", row.names = TRUE)
+
+## save trimmed object
+# saveRDS(df_trimmed, file = "XXXX/pre_LPSN_cleaned_species")
+
+```
+
+
+## Prepare unique list for search
+
+Prepare list of unique taxonomic names for each level that will combined and used used to search LPSN
+
+Check Unique domains
+
+```{r}
+
+df_trimmed <- readRDS(file = "XXXX/pre_LPSN_cleaned_species")
+
+## check unique values for each taxonomic level
+sort(unique(df_trimmed$Domain))
+#  
+
+## count ASVs in each domain
+table(df_trimmed[, "Domain"])
+
+ 
+
+
+
+## check Eukaryota in data
+
+df_trimmed|> 
+  as.data.frame() |> 
+  dplyr::filter(Domain == "Eukaryota")
+
+
+
+
+```
+
+
+
+
+Check unique phyla
+
+
+```{r}
+
+phylum_list <- sort(unique(df_trimmed$Phylum))
+length(phylum_list)
+
+
+phylum_list
+
+
+```
+
+
+
+
+
+Check unique classes
+
+```{r}
+class_list <- sort(unique(df_trimmed$Class))
+length(class_list)
+
+
+
+class_list
+
+
+```
+
+
+Check unique orders
+
+```{r}
+
+order_list <- sort(unique(df_trimmed$Order))
+length(order_list)
+
+
+order_list
+
+# [179] "Xanthomonadales"
+
+
+```
+
+
+
+
+
+Check unique families
+
+```{r}
+
+family_list <- sort(unique(df_trimmed$Family))
+length(family_list)
+
+
+family_list
+
+
+
+
+```
+
+
+
+
+Check unique genera
+
+```{r}
+
+genus_list <- sort(unique(df_trimmed$Genus))
+length(genus_list)
+
+
+
+genus_list
+
+
+
+
+```
+
+
+
+
+Check unique species (genera and species)
+
+```{r}
+species_list <- sort(unique(df_trimmed$Species))
+length(species_list)
+
+
+
+species_list 
+
+
+
+```
+
+
+
+
+
+```{r}
+
+## combine all taxa
+combined_taxa <- c(phylum_list,class_list, order_list, family_list, genus_list, species_list)
+
+
+# save combined list
+# saveRDS(combined_taxa, file = "XXXX/combined.unique.taxa.list")
+
+```
+
+
+# LSPN API
+
+Register with  the LPSN site and record the login email and password used
+https://sso.dsmz.de/auth/realms/DSMZ/login-actions/registration?client_id=api.lpsn&tab_id=4jgxLa3kKA8 
+
+Ensure your .Renviron file contains the fields below to enable login and not record password in the script. Info on modifying .Renviron file: https://docs.posit.co/ide/user/ide/guide/environments/r/managing-r.html 
+
+Format needed for LPSN login:
+DSMZ_API_USER = <email>
+DSMZ_API_PASSWORD = <password>
+
+## Run API function
+
+Function starts at species level, and searched for genus and species. If it cannot be found it will just search for genus. It works backwards moving up the lineage until the record is found.
+At any point when a record is found, it is checked to ensure it is flagged as the  correct name, if it is a synonym, it goes to the correct name and uses that point to move up the lineage. The level where the classification was found is recorded.
+
+Any records not found are logged
+Taxa are processed in batches abd the results are saved to a new sheet in a single excelworkbook.
+
+```{r}
+
+# load function
+source("LPSN_API_functions.R") 
+
+
+#Load libraries
+library(dplyr)
+library(stringr)
+library(purrr)
+
+# load combined taxa list
+combined_taxa <- readRDS(file = "XXXX/combined.unique.taxa.list") 
+length(combined_taxa)
+# 
+sum(combined_taxa == "")
+# 
+sum(combined_taxa != "")
+# 
+
+my_taxa_clean <- combined_taxa[combined_taxa != ""]
+length(my_taxa_clean)
+# 
+str(my_taxa_clean)
+
+
+
+# # Your cleaned taxa list (can include synonyms, candidatus, or higher ranks)
+# my_taxa <- c("Firmicutes",..., "Clostridium")
+ 
+# Output directory structure
+CSV_DIR <- "XXXX/results/csv_lineages"
+WB_PATH <- "XXXX/results/LPSN_result_Master.xlsx"
+LOG_DIR <- "XXXX/results/logs"
+
+
+# Run API function
+# set batch size as needed. Small batches is a bit slower as it opens and saves to excel more often.
+
+
+process_lpsn_candidatus_batch(
+# process_lpsn_cached_batches(
+  taxa_list     = my_taxa_clean,
+  csv_path      = CSV_DIR,
+  workbook_path = WB_PATH,
+  log_path      = LOG_DIR,
+  user          = Sys.getenv("DSMZ_API_USER"),
+  password      = Sys.getenv("DSMZ_API_PASSWORD"),
+  batch_size    = 50,    # Processes 50 unique taxa per Excel sheet
+  pause_min     = 0.5,   # Minimum delay between API calls (seconds)
+  pause_max     = 1.5,   # Maximum delay between API calls (seconds)
+  use_timestamp = TRUE   # Appends date/time to the Excel filename
+)
+
+# Input: xxxx taxa. Unique/Cleaned: xxxx. Deduplication log saved to 'deduplicated_taxa.txt'.
+
+# Run Complete. Total time: 4.222129 hours
+
+```
+
+
+## Combine log files
+This file lists all the taxa that were not found  - these taxa can be searched for using the LPSN site or other database as suitable.
+The placeholder names from various databases end up here as they do not exist in the official lineage
+
+
+```{r}
+
+# set location of log files to combined and where the output should be
+
+log_dir <- "agrf_0098/LPSN/results/logs"
+output_file <- "agrf_0098/LPSN/results/all_missing_taxa.txt"
+
+# List all .txt files in the directory
+files <- list.files(path = log_dir, pattern = "\\.txt$", full.names = TRUE)
+
+# Read all files into a single list, merge, and save
+merged_content <- files |>
+  # Read each file as a character vector
+  lapply(readLines, warn = FALSE) |>
+  # Flatten the list into one long vector
+  unlist() |>
+  # Optional: Remove any empty strings and duplicates
+  unique() |>
+  (\(x) x[x != ""])() |>
+  # Sort alphabetically
+  sort()
+
+# Write the final combined file
+writeLines(merged_content, output_file)
+
+message("Merged ", length(files), " files into: ", output_file)
+
+# Merged 47 files into: XXXX/results/all_missing_taxa.txt
+
+```
+
+
+
+### Combine all batch results into a single file
+
+```{r}
+library(openxlsx)
+library(dplyr)
+
+# Set input and output files
+input_workbook <- "XXXX/results/LPSN_result_Master_20260422_1514.xlsx"
+output_csv     <- "XXXX/results/LPSN_Master_Combined.csv"
+
+# Get names of all sheets in the workbook
+sheet_names <- openxlsx::getSheetNames(input_workbook)
+
+# Read, convert to character, and combine
+combined_data <- sheet_names |>
+  lapply(\(s) {
+    df <- openxlsx::read.xlsx(input_workbook, sheet = s)
+    # Convert every column to character to prevent type mismatch
+    df |> dplyr::mutate(across(everything(), as.character))
+  }) |>
+  dplyr::bind_rows()
+
+# Save to CSV (or use sep = "\t" for TSV)
+write.csv(combined_data, output_csv, row.names = FALSE)
+
+message("Successfully combined ", length(sheet_names), " sheets into: ", output_csv)
+
+# Successfully combined 47 sheets into: XXXXX/results/LPSN_Master_Combined_XXXX.csv
+
+```
+
+
+## Processing automated taxonomy update - lookup
+
+A new table is created that uses the returned LPSN names and maps them to the original taxonomy table containing ASVs. The result is Final_Taxonomy_Matched.csv which contains the ASVs, the original lineage, then a column indicating which term in the lineage was matched in the LPSN database and all upstream levels.
+
+This file allows you to check manually & curate the taxonomic lineage as desired.
+
+```{r}
+# load function
+source("LPSN_API_functions.R") 
+
+###### usage example
+# Define Paths and file names
+master_file <- "agrf_0098/LPSN/results/LPSN_Master_Combined.csv"
+tax_file    <- "agrf_0098/taxonomy_pre_LPSN.csv"
+result_file <- "agrf_0098/LPSN/Final_Taxonomy_Matched.csv"
+
+#Define Custom Ranks/Columns (Optional) ---
+# You can provide these in any case (lower, UPPER, Sentence)
+
+# rank order to check
+my_check_ranks <- c("species", "genus", "family", "order", "class", "phylum", "kingdom")
+
+# columns from the LPSN master file to add to the taxonomy file
+my_append_cols <- c("domain", "kingdom", "phylum", "class", "order", "family", "genus", "species")
+
+#Run the Function ---
+process_taxonomy_lookup(
+  master_path = master_file,
+  taxonomy_path = tax_file,
+  output_path = result_file,
+  check_ranks = my_check_ranks, # Now an input
+  append_cols = my_append_cols  # Now an input
+)
+
+# Done. Results in: XXXXX/Final_Taxonomy_Matched.csv
+```
+
