@@ -1,0 +1,130 @@
+---
+title: "LPSN API Prerequisites"
+author: "Rachele Gore"
+date: "2026-05-02"
+output:
+  html_document: 
+    theme: sandstone
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 6
+    highlight: tango
+    fig_retina: 1
+    fig_caption: yes
+    table_caption: yes
+    keep_md: yes
+    df_print: paged
+    self_contained: true
+  html_notebook:
+    theme: sandstone
+    toc_depth: 6
+    highlight: tango
+    fig_caption: yes
+    table_caption: yes
+  pdf_document:
+    dev: cairo_pdf
+always_allow_html: true
+---
+
+
+
+```{r setup, include=FALSE}
+
+# Global set up: Show code blocks but don't run them by default when knitting
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+
+```
+
+R Language version
+
+```{r, eval=TRUE}
+cat("Current version: ", version$version.string, "\n")
+
+```
+
+Packages to install if needed
+
+```{r}
+# install usethis - allows you to open and edit .Renviron
+install.packages("usethis")
+
+```
+
+
+
+# Register with LPSN
+
+Allows you to use the API rather than manually searching for each taxa.
+
+Register here and ensure you record your login and password details: 
+
+https://sso.dsmz.de/auth/realms/DSMZ/login-actions/registration?client_id=api.lpsn&tab_id=rb9JUBcCrvY
+
+
+# Add LPSN registration details to your .Renviron file
+
+Add your LPSN login details to your R environment. The API call needs a valid login to allow direct access to the database. The code needs to access the user name and password directly from the .Renviron file
+
+_How to add the LPSN login details to R:_
+
+```{r}
+
+usethis::edit_r_environ() 
+
+```
+
+When your personal .Renviron file opens, add the following API key - has to be the same login details used when registering with LPSN.
+
+DSMZ_API_USER="email_address" 
+DSMZ_API_PASSWORD="password"
+
+
+# Restart R and check details in .Renviron file:
+
+_Restart r_
+
+Via RStudio keyboard shortcut:
+  - Windows/Linux: Ctrl + Shift + F10
+  - macOS: Cmd + Shift + F10
+  
+From RStudio menu:
+  - Session → Restart R
+  
+
+
+Once R restarted, check details were saved correctly to the .Renviron file
+
+```{r}
+
+utils::file.edit("~/.Renviron")
+
+```
+
+
+
+_install the LPSN R client package_
+
+The R package that provides the rules to access the LPSN database needs to be installed and loaded before you can access the data.
+
+To check package status: https://r-forge.r-project.org/R/?group_id=1573
+
+as at Nov 2026, R-Forge has announced that it will shut down. Check on the LPSN site for the current R API Client repository:
+
+General info - https://lpsn.dsmz.de/text/lpsn-api
+
+Current API page -  https://api.lpsn.dsmz.de/?pk_vid=c87dd9ccc4fe0391179444961377ea6d 
+
+
+
+
+```{r}
+
+	utils::install.packages("LPSN", repos = "http://R-Forge.R-project.org")
+
+```
+
+
+If .Renviron is correct, and the LPSN package is installed, move onto the the taxa clean up and API calls:
+LPSN_Processing_taxa_list.Rmd
+
+

@@ -1,0 +1,4318 @@
+---
+title: "Combined taxonomy files - LPSN taxa check"
+author: "Rachele Gore"
+date: "2026-09-30"
+output:
+  html_document: 
+    theme: sandstone
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 6
+    highlight: tango
+    fig_retina: 1
+    fig_caption: yes
+    table_caption: yes
+    keep_md: yes
+    df_print: paged
+    self_contained: true
+  html_notebook:
+    theme: sandstone
+    toc_depth: 6
+    highlight: tango
+    fig_caption: yes
+    table_caption: yes
+  pdf_document:
+    dev: cairo_pdf
+always_allow_html: true
+---
+
+
+
+Please run the 'setup' code block first.
+It will ensure that the function file is uploaded as a global variable and
+will allow you to directly call any functions in the function R script directly:
+ Any functions can be directly called using 'lpsn_utils$<function name>',
+ e.g., 
+
+```{r setup, include=FALSE}
+
+# Global set up: Show code blocks but don't run them by default when knitting
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+
+# Override: This specific chunk MUST run to load utility and API call functions
+# Use 'include = FALSE' so the loading logic doesn't clutter the PDF/HTML with unnecessary information
+
+## The code below is an alternative to calling the utilities/function file, e.g.,
+## source("LPSN_API_functions.R", needed to load functions for this script
+
+
+## Instead of running source("LPSN_API_functions.R") to load functions, 
+## call the function using directly with 'lpsn_utils$' 
+## e.g. lpsn_utils$page_data(raw_taxonomy, chunk_size = 10)
+
+if (file.exists("LPSN_API_functions.R")) { 
+  lpsn_utils <- new.env()
+  sys.source("LPSN_API_functions.R", envir = lpsn_utils)
+}
+
+
+```
+
+R Language version
+
+```{r, eval=TRUE}
+
+cat("Current version: ", version$version.string, "\n")
+
+```
+
+Current working directory
+
+```{r}
+
+## check wd - file paths relative to wd
+getwd()
+
+```
+
+
+
+# Prepare data for LPSN API
+
+
+__Install LPSN package and load library__
+
+```{r}
+
+# Install LPSN package if needed and load LPSN API library
+# install.packages("LPSN", repos="http://R-Forge.R-project.org")
+
+library(LPSN)
+
+```
+
+
+
+
+## Import and split combined taxa tables
+
+_Check file formats_
+
+Import file and check data structure (eg Best_taxonomy.csv from AGRF). Split any combined columns and eliminate unwanted columns.
+
+
+```{r}
+
+# check column name and first row before importing
+readr::read_delim(
+  file = "./data/Test_taxonomy.csv", # path where taxonomy file is located
+  n_max = 1)
+
+# ── Column specification ────────────────────────
+# Delimiter: ","
+# chr (3): Feature ID, Taxon, Assignment Database
+# dbl (1): Confidence
+# 
+# ℹ Use `spec()` to retrieve the full column specification for this data.
+# ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+# # A tibble: 1 × 4
+#   `Feature ID`   Taxon    Confidence  `Assignment Database`
+#   <chr>                            <chr>                                            <dbl> <chr>                
+# 1 0005978dc14cfa9fd7b559b7721bf193 d__Bacteria; p__Bacteroidota; c__Bacteroid…         95 GTDB r207     
+  
+  
+# import file - only import wanted columns (`Feature ID`& Taxon)
+raw_taxa <- readr::read_delim(
+  file = "./data/Test_taxonomy.csv", # path to where AGRF taxonomy file is
+  delim = ",", # columns are separated by commas
+  # select only Feature ID and Taxon columns
+  col_select = c("Feature ID", "Taxon"), 
+  trim_ws = TRUE  # get rid of preceding and trailing white spaces
+) |> 
+  ## Set the first column containing ASVs as row names
+  tibble::column_to_rownames(var = "Feature ID")
+
+nrow(raw_taxa)
+# [1] 1080
+
+## view data - truncated to max of 20 characters
+subset <- utils::head(raw_taxa)
+
+# Function: Truncate each cell to 10 characters
+subset[] <- lapply(subset, function(col) {
+  
+  # Convert to character, then truncate to 20 characters
+  substr(as.character(col), 1, 20)
+})
+
+# Print result
+print(subset, quote = FALSE, right = FALSE)
+
+# Taxonony in Taxon column separated by semicolons            
+                                 Taxon               
+# 0005978dc14cfa9fd7b559b7721bf193 d__Bacteria; p__Bact
+# 000a91f2e03d19b50ee4c7b2671054b6 d__Bacteria; p__Plan
+# 000a95ae83d53c8a196b707c5e1dcfa6 d__Bacteria; p__Plan
+# 000c1766c74a33f3cf38892dec91d664 d__Bacteria; p__Firm
+# 001a898130b235a2d574339155c929e7 d__Bacteria; p__Firm
+# 001dc02a5297ea9c762ef03546a4a6f4 d__Bacteria; p__Acti
+
+
+# separate taxa into individual columns
+                                 
+taxtable <- raw_taxa |>
+  tibble::rownames_to_column("ASV") |>   # keep ASVs as a column
+  tibble::as_tibble() |>
+  tidyr::separate(taxonomy,
+                  sep = ";",
+                  c("Domain",
+                    "Phylum",
+                    "Class",
+                    "Order",
+                    "Family",
+                    "Genus",
+                    "Species")
+                  ) |>
+  # remove preceding and trailing white spaces
+  dplyr::mutate(dplyr::across(dplyr::where(is.character), stringr::str_trim)) |>
+  # restore ASVs as rownames
+  tibble::column_to_rownames("ASV") |>   
+  as.matrix()
+
+# check variable names
+colnames(taxtable)
+# [1] "Domain"  "Phylum"  "Class"   "Order"   "Family"  "Genus"   "Species"
+
+
+# check what the prefixes look like
+# Show rows 1 to 3 and columns 1 and 3
+utils::head(taxtable)[1:3,1:2]
+
+
+
+## remove prefix for taxa names with functions saved in:
+# LPSN_API_functions.R
+taxtable_df <- lpsn_utils$remove_taxa_prefix(taxtable)
+colnames(taxtable_df)
+# [1] "Domain"  "Phylum"  "Class"   "Order"   "Family"  "Genus"   "Species"
+
+# check data
+subset <- utils::head(taxtable_df)
+
+# Truncate each cell to 10 characters
+subset[] <- lapply(subset, function(col) {
+  
+  # Convert to character, then truncate
+  substr(as.character(col), 1, 20)
+})
+
+# check prefixes are gone
+utils::head(subset)[1:3,1:2] # print out row 1:3 and col 1:2
+
+
+# remove excess white spaces
+df_clean <- taxtable_df |>
+  dplyr::mutate(dplyr::across(dplyr::where(is.character), stringr::str_trim))
+
+# save objects 
+
+## save taxonomy with prefixes removed
+saveRDS(df_clean, file = "./objects/taxa.dataframes.precleaned.noprefix.rds") # path to save objects
+
+
+```
+
+
+
+_Prepare data for taxonomy assignment_
+
+Check for mitochondria and chloroplasts. 
+If found, remove from data
+
+```{r}
+
+### load object to be checked
+df_clean <- readRDS(file = "./objects/taxa.dataframes.precleaned.noprefix.rds")
+
+# Count occurrences of chloroplast or mitochondria in each column
+counts <- df_clean |>
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::everything(),
+      as.character
+    )
+  ) |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::everything(),
+      ~ sum(
+        stringr::str_detect(
+          .,
+          stringr::regex(
+            "chloroplast|mitochondri", 
+            ignore_case = TRUE)
+        ),
+        na.rm = TRUE
+      )
+    )
+  ) |>
+  tidyr::pivot_longer(
+    cols = dplyr::everything(),
+    names_to = "Taxonomic_level",
+    values_to = "Count"
+  )
+
+print(counts)
+
+#  Taxonomic_level Count
+#   <chr>           <int>
+# 1 Domain              0
+# 2 Phylum              0
+# 3 Class               0
+# 4 Order               0
+# 5 Family              0
+# 6 Genus               0
+# 7 Species             0
+
+
+# no mitochondrion or chloroplasts - no need for modification 
+
+
+```
+
+
+_Removing unwanted ASVs_
+
+Remove chloroplasts and mitochondria if present
+
+```{r}
+
+# Set search criteria
+pattern <- "chloroplast|mitochondri"
+
+# # select rows that match criteria
+mito_chloro <- df_clean %>%
+  tibble::rownames_to_column("row_name") |>
+  dplyr::filter(dplyr::if_any(
+    dplyr::everything(), ~ base::grepl(pattern, .x, ignore.case = TRUE)))
+
+utils::head(mito_chloro)
+
+
+
+# remove the mito/chloroplast ASVs from df_clean dataframe
+df_filtered <- df_clean[!base::rownames(df_clean) %in% mito_chloro$row_name, ]
+
+# check that you only removed the required 
+
+base::nrow(df_clean)
+
+base::nrow(df_filtered)
+
+base::nrow(mito_chloro)
+
+base::nrow(df_clean) - base::nrow(df_filtered)
+
+
+## save taxonomy with prefixes removed
+saveRDS(df_filtered, file = "./objects/taxa.dataframes.precleaned.noprefix.rds")
+```
+
+_Check data structure_
+
+```{r}
+
+
+# load data if starting in this block:
+df_clean <- readRDS(file = "./objects/taxa.dataframes.precleaned.noprefix.rds")
+
+# number of empty cells for each taxonomic level
+
+df_clean |>
+  dplyr::summarise(across(everything(), ~ sum(is.na(.x) | .x == "")))
+
+#   Domain Phylum Class Order Family Genus Species
+# 1      0      4    19    12     17    10       0
+
+
+
+
+```
+
+
+## Clean taxa names
+
+LPSN does not contain place holder names (numbers and letters). Need to clean up the taxa names that are only made up of letters and remove suffixes added by AGRF.
+
+Any taxa names with numbers will need manual curation, so you will need to decide how you want to clean your data - the LPSN API call will result in a record in the log for failed searches.
+
+__Load Data__
+
+```{r}
+
+df_clean <- readRDS(file = "./objects/taxa.dataframes.precleaned.noprefix.rds")
+
+```
+
+
+### STEP 1: Remove underscores and initial orphaned letter codes
+
+Check all columns and remove underscores, and any resulting single and double orphaned letters in columns with no numbers - means that the majority of the Species column will not be changed
+
+
+```{r}
+
+# Remove underscores and orphaned letters but it ignores anything with numbers
+## will not clean all orphans - need to do a column by column check after this
+
+df_trimmed <- df_clean |>
+  dplyr::mutate(dplyr::across(
+    c(Domain, Phylum, Class, Order, Family, Genus, Species),
+    ~ ifelse(
+      stringr::str_detect(.x, "^[^0-9]+$"),  # TRUE only if NO numbers anywhere
+      .x |>
+        stringr::str_replace_all("_", " ") |>
+        stringr::str_remove_all("\\b[A-Za-z]{1,2}\\b") |>
+        stringr::str_squish(),
+      .x  # leave untouched if ANY number is present
+    )
+  ))
+
+
+head(df_trimmed)
+
+#     Domain          Phylum           Class               Order
+# 1 Bacteria    Bacteroidota     Bacteroidia     Chitinophagales
+# 2 Bacteria Planctomycetota  Planctomycetia       Isosphaerales
+# 3 Bacteria Planctomycetota  Planctomycetia       Isosphaerales
+# 4 Bacteria      Firmicutes         Bacilli          Bacillales
+# 5 Bacteria      Firmicutes         Bacilli          Bacillales
+# 6 Bacteria  Actinobacteria Thermoleophilia Solirubrobacterales
+#                 Family           Genus
+# 1     Chitinophagaceae    Segetibacter
+# 2       Isosphaeraceae    Unclassified
+# 3       Isosphaeraceae        Tautonia
+# 4          Bacillaceae        Bacillus
+# 5     Amphibacillaceae    Unclassified
+# 6 Solirubrobacteraceae Solirubrobacter
+#                             Species
+# 1           Segetibacter aerophilus
+# 2                      Unclassified
+# 3                    Tautonia rosea
+# 4                Bacillus foraminis
+# 5                      Unclassified
+# 6 Solirubrobacter ginsenosidimutans
+
+
+# the number of rows should remain the same
+sprintf("%d : %d", nrow(df_clean), nrow(df_trimmed))
+# [1] "1080 : 1080"
+
+## check row changes for record 705
+# Transpose the combined rows
+comparison <- t(rbind(df_clean[705, ], df_trimmed[705, ]))
+colnames(comparison) <- c("Original", "Trimmed")
+
+comparison
+
+#         Original                            Trimmed                            
+# Domain  "Bacteria"                          "Bacteria"                         
+# Phylum  "Proteobacteria"                    "Proteobacteria"                   
+# Class   "Alphaproteobacteria"               "Alphaproteobacteria"              
+# Order   "Sphingomonadales"                  "Sphingomonadales"                 
+# Family  "Sphingomonadaceae"                 "Sphingomonadaceae"                
+# Genus   "Sphingoaurantiacus"                "Sphingoaurantiacus"               
+# Species "Sphingoaurantiacus polygranulatus" "Sphingoaurantiacus polygranulatus"
+
+
+
+# save trimmed object
+
+saveRDS(df_trimmed, file = "./objects/taxa.dataframes.precleaned.trimmed.rds")
+
+```
+
+
+
+### STEP 2: Clean Species column (if populated)
+
+Check if any single, double or triple string in species column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string.
+
+Species that have not yet been give a species name can have a temporary species name beginning with "sp" and followed by a list of numbers, e.g, Massilia sp900129765. Remove the spXXXXX
+
+To speed up the search, it is recommended that these temporary species names are removed.
+
+
+```{r}
+
+# load trimmed object
+df_trimmed <- readRDS(file = "./objects/taxa.dataframes.precleaned.trimmed.rds")
+
+# find taxa with orphans
+
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Species), ]
+
+# View the first few hits
+head(matches)
+
+#      Domain         Phylum               Class            Order         Family         Genus
+# 61  Bacteria Proteobacteria Alphaproteobacteria      Rhizobiales   Rhizobiaceae    Aureimonas
+# 114 Bacteria     Firmicutes             Bacilli  Paenibacillales    NBRC-103111 Paenibacillus
+# 314 Bacteria  Cyanobacteria      Cyanobacteriia Cyanobacteriales    Nostocaceae   Tolypothrix
+# 408 Bacteria Proteobacteria Gammaproteobacteria  Pseudomonadales Halomonadaceae     Halomonas
+# 419 Bacteria     Firmicutes             Bacilli       Bacillales      DSM-18226      Bacillus
+# 420 Bacteria     Firmicutes             Bacilli       Bacillales      DSM-18226      Bacillus
+#                         Species
+# 61     Aureimonas A sp001425485
+# 114 Paenibacillus E sp008017805
+# 314   Tolypothrix B sp002368435
+# 408     Halomonas C sp900961225
+# 419     Bacillus BU sp000242895
+# 420     Bacillus BU sp000242895
+
+
+## Run the function to clean orphaned letters from species
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+
+results <- lpsn_utils$clean_orphaned_letters(
+  df_trimmed,     # data frame
+  "Species",      # column name
+  max_letters = 3 # max number of sequential UPPERCASE letters
+  )
+
+# message
+# Cleaning complete. 13 rows modified.
+
+# Report of changes
+report_species <- results$report
+
+# Check the first 6 changes
+head(report_species)
+#   Row_Index                    Original                   Cleaned
+# 1        61    Aureimonas A sp001425485    Aureimonas sp001425485
+# 2       114 Paenibacillus E sp008017805 Paenibacillus sp008017805
+# 3       314   Tolypothrix B sp002368435   Tolypothrix sp002368435
+# 4       408     Halomonas C sp900961225     Halomonas sp900961225
+# 5       419     Bacillus BU sp000242895      Bacillus sp000242895
+# 6       420     Bacillus BU sp000242895      Bacillus sp000242895
+
+# assign the updated data to the original dataframe
+df_trimmed <- results$data
+
+# check specific row number to confirm change. eg row index 23
+print(df_trimmed)[23,]
+
+#      Domain           Phylum         Class               Order          Family        Genus
+# 23 Bacteria Actinobacteriota Actinomycetia Propionibacteriales Nocardioidaceae Unclassified
+#         Species
+# 23 Unclassified
+
+
+# save report as csv if needed - as a log of changes from function
+utils::write.csv(
+  report_species,
+  file = "species_cleaning_report.csv",
+  row.names = FALSE
+)
+
+
+# check for short taxa names and taxa with numbers
+
+species_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Species",
+    min_letters = 6,
+    export_csv = TRUE,
+    file = "species_suspicious_taxa.csv"
+)
+
+# 225 suspicious unique taxa identified in 'Species'.
+
+### If you need to change it do the following:
+
+# list unique instances of suspicious taxa
+# Please NOTE: valid taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_spp <- unique(species_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_spp, sep = "\n")
+
+# 45385 sp002797395
+# G192 sp019084075
+# R267 sp013340205
+# AC-14 sp005888325
+# AC-51 sp005883885
+# AG11 sp002215645
+# AR9 sp003221455
+# AV80 sp003218305
+# BD2-11 sp002238605
+# DP-1 sp005879605
+# ER46 sp003054705
+# Ga0077545 sp003347645
+# Ga0077545 sp014191545
+# R-H-3 sp002198675
+# SB21 sp008933615
+# Bin16 sp002238425
+# DYL19 sp019008365
+# FEB-7 sp016708825
+# GCA-016699535 sp016699535
+# Iso899 sp000421445
+# JKG1 sp000526415
+# KBS-96 sp000381625
+# OLB15 sp016713325
+# OLB17 sp003223025
+# OLB7 sp016788565
+# PCC7113 sp014695895
+# SCN-69-37 sp001724025
+# SCN-69-89 sp008039575
+# SCN-70-22 sp016719105
+# SDU3-3 sp009268125
+# UBA1941 sp018267385
+# UBA2466 sp016875135
+# UBA3254 sp011328975
+# UBA4093 sp002083825
+# UBA4720 sp003134685
+# UBA4720 sp017881465
+# UBA5189 sp013822395
+# UBA6163 sp007694185
+# UBA668 sp002299395
+# UBA8639 sp009377845
+# Z2-YC6860 sp001579845
+# 2-12-FULL-64-23 sp001770575
+# DB6-IX sp003612895
+# DSGV01 sp011057325
+# DSJA01 sp011054185
+# IMCC26207 sp001025035
+# LNNU-3342 sp008711135
+# MPNL01 sp002239005
+# PSRF01 sp013817595
+# QHVH01 sp003222245
+# QHXM01 sp003222945
+# SCUB01 sp004297465
+# SHVA01 sp009691195
+# SIAJ01 sp009691845
+# SIRX01 sp004563715
+# SKVR01 sp007693555
+# SOKP01 sp013375475
+# SYFT01 sp016871335
+# SZAS-1 sp018266075
+# SZUA-540 sp009731355
+# VAZQ01 sp005883115
+# VBCG01 sp016716425
+# VBDL01 sp014873965
+# VFZN01 sp016871195
+# VGSZ01 sp016874845
+# WHTC01 sp009379795
+# WHTI01 sp009377815
+# WHTX01 sp009377505
+# WYBL01 sp011526565
+# 12-FULL-67-14b sp016871275
+# CSBr16-57R1 sp007116505
+# CSBr16-57R1 sp018401275
+# PALSA-647 sp003132585
+# Palsa-739 sp003139545
+# SCSIO-52909 sp011492945
+# SCSIO-52909 sp902805985
+# SCSIO-52909 sp902812425
+# SEOHO-28 sp003044185
+# CADCWI01 sp902806355
+# CADEDH01 sp902826025
+# CAHJWH01 sp009765965
+# CAIKUF01 sp016702655
+# CAIPTA01 sp903867855
+# CAIQIQ01 sp903871935
+# CAIVZM01 sp903910385
+# CAIXZV01 sp903930745
+# CAIYRB01 sp016874735
+# CAIZPE01 sp016710525
+# CAIZWU01 sp903936775
+# Dongia sp000620685
+# HGW-BRC1-1 sp002842095
+# JAAUTJ01 sp014696105
+# JAAUTN01 sp014695345
+# JAAYLR01 sp016699405
+# JABDFB01 sp013286765
+# JABFSC01 sp009692435
+# JABFXX01 sp016720595
+# JACCTI01 sp902805675
+# JACCZE01 sp013816415
+# JACDCA01 sp013817065
+# JACQFH01 sp016200145
+# JACVSF01 sp014534085
+# JADGQX01 sp017881445
+# JADJHU01 sp016707425
+# JADJOM01 sp016713435
+# JADKFS01 sp016717335
+# JAGNHS01 sp018001635
+# JAGNWK01 sp017985985
+# MEBICO9517 sp003285105
+# Naasia sp017916505
+# Devosia sp016698645
+# SCGC-AG-212-J23 sp005881595
+# Bacillus sp000242895
+# Baekduia sp000688095
+# Belnapia sp016773205
+# Belnapia sp902805545
+# FACHB-SPT15 sp014849525
+# Massilia sp001412595
+# Massilia sp012927275
+# Massilia sp018119395
+# Massilia sp900129765
+# Massilia sp902506415
+# UM-FILTER-63-12 sp002789955
+# Halomonas sp900961225
+# Hassallia sp002218085
+# Nodularia sp015207155
+# Pirellula sp001610875
+# Rhodopila sp009765975
+# Aliterella sp000332075
+# Aureimonas sp001425485
+# Flavitalea sp014873345
+# Luteimonas sp902506295
+# Luteitalea sp016865485
+# Microvirga sp018069605
+# Nafulsella sp017948555
+# Nonomuraea sp003236395
+# Paracoccus sp002732665
+# Paracoccus sp004335005
+# Pedococcus sp009707485
+# Roseomonas sp003173615
+# Roseomonas sp016107305
+# Roseomonas sp017355405
+# Rubrivivax sp016790225
+# Stenomitos sp014695975
+# Tannerella sp002890585
+# Trichormus sp001548375
+# Variovorax sp001541225
+# Variovorax sp902506565
+# Actinotalea sp014042015
+# Caulobacter sp016467375
+# Cupriavidus sp001725945
+# Kouleothrix sp016722075
+# Neobacillus sp004341175
+# Planococcus sp000775575
+# Pontibacter sp006385705
+# Pontibacter sp014297265
+# Ramlibacter sp013087525
+# Rhizobacter sp001425785
+# Rhodococcus sp005938745
+# Roseococcus sp017355885
+# Skermanella sp016653635
+# Tolypothrix sp002368435
+# Aquihabitans sp019048865
+# Arthrobacter sp016405885
+# Blastococcus sp000620185
+# Blastococcus sp004570385
+# Blastococcus sp900102425
+# Blastococcus sp900188025
+# Blastococcus sp900230285
+# Cesiribacter sp000597885
+# Gemmatimonas sp013004105
+# Gemmatimonas sp016720905
+# Hymenobacter sp012273015
+# Nitrosomonas sp900112825
+# Nitrosospira sp003050965
+# Nocardioides sp013155375
+# Nocardioides sp014360585
+# Nocardioides sp016735675
+# Nocardioides sp017916425
+# Propylenella sp900110915
+# Segetibacter sp017355875
+# Streptomyces sp000527195
+# Streptomyces sp008042155
+# Modestobacter sp013408865
+# Modestobacter sp019112525
+# Paenibacillus sp000023585
+# Paenibacillus sp008017805
+# Paludisphaera sp001610895
+# Salinisphaera sp003177035
+# Salinisphaera sp017744135
+# Bradyrhizobium sp018596315
+# Ginsengibacter sp003721595
+# Longimicrobium sp902805735
+# Microterricola sp003610585
+# Nostoc PCC-73102 commune
+# Pseudonocardia sp001942185
+# Pseudonocardia sp012911935
+# Rhodomicrobium sp018619475
+# Steroidobacter sp016801985
+# Croceibacterium sp003569745
+# Croceimicrobium sp018401735
+# Flavisolibacter sp014163555
+# Phyllobacterium sp000282595
+# Salinimicrobium sp012038135
+# Solirubrobacter sp000425945
+# Anaeromyxobacter sp000964525
+# Calycomorphotria sp007744515
+# Geodermatophilus sp000701365
+# Methylobacterium sp001422985
+# Methylobacterium sp003217615
+# Paracraurococcus sp004343615
+# Sphingomicrobium sp000620665
+# Sphingomicrobium sp014873475
+# Sphingomicrobium sp016924655
+# Crinalium 22.89 epipsammum
+# Pseudarthrobacter sp002953935
+# Pseudarthrobacter sp018613805
+# Flavipsychrobacter sp004144175
+# Noviherbaspirillum sp001428545
+# Noviherbaspirillum sp003590875
+# Noviherbaspirillum sp019052805
+# Marinilactibacillus sp017599325
+# Allosphingosinicella sp003347635
+# Ellin5102
+# soil
+
+# Select the original taxa names from above list and type corrected name, add these to
+# species_map vector and run function clean names. I am removing spXXXXXXXXX as these  
+# are not valid species names
+
+# have chosen to clean the following species names
+species_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""  [1] "45385 sp002797395"               
+  "G192 sp019084075" = "", 
+  "R267 sp013340205" = "",                 
+  "AC-14 sp005888325" = "",                
+  "AC-51 sp005883885" = "",                
+  "AG11 sp002215645" = "",                 
+  "AR9 sp003221455" = "",                  
+  "AV80 sp003218305" = "",                 
+  "BD2-11 sp002238605" = "",               
+  "DP-1 sp005879605" = "",                 
+  "ER46 sp003054705" = "",                 
+  "Ga0077545 sp003347645" = "",            
+  "Ga0077545 sp014191545" = "",            
+  "R-H-3 sp002198675" = "",                
+  "SB21 sp008933615" = "",                 
+  "Bin16 sp002238425" = "",                
+  "DYL19 sp019008365" = "",                
+  "FEB-7 sp016708825" = "",                
+  "GCA-016699535 sp016699535" = "",        
+  "Iso899 sp000421445" = "",               
+  "JKG1 sp000526415" = "",                 
+  "KBS-96 sp000381625" = "",               
+  "OLB15 sp016713325" = "",                
+  "OLB17 sp003223025" = "",                
+  "OLB7 sp016788565" = "",                 
+  "PCC7113 sp014695895" = "",              
+  "SCN-69-37 sp001724025" = "",            
+  "SCN-69-89 sp008039575" = "",            
+  "SCN-70-22 sp016719105" = "",            
+  "SDU3-3 sp009268125" = "",               
+  "UBA1941 sp018267385" = "",              
+  "UBA2466 sp016875135" = "",              
+  "UBA3254 sp011328975" = "",              
+  "UBA4093 sp002083825" = "",              
+  "UBA4720 sp003134685" = "",              
+  "UBA4720 sp017881465" = "",              
+  "UBA5189 sp013822395" = "",              
+  "UBA6163 sp007694185" = "",              
+  "UBA668 sp002299395" = "",               
+  "UBA8639 sp009377845" = "",              
+  "Z2-YC6860 sp001579845" = "",            
+  "2-12-FULL-64-23 sp001770575" = "",      
+  "DB6-IX sp003612895" = "",               
+  "DSGV01 sp011057325" = "",               
+  "DSJA01 sp011054185" = "",               
+  "IMCC26207 sp001025035" = "",           
+  "LNNU-3342 sp008711135" = "",            
+  "MPNL01 sp002239005" = "",               
+  "PSRF01 sp013817595" = "",               
+  "QHVH01 sp003222245" = "",               
+  "QHXM01 sp003222945" = "",               
+  "SCUB01 sp004297465" = "",               
+  "SHVA01 sp009691195" = "",               
+  "SIAJ01 sp009691845" = "",               
+  "SIRX01 sp004563715" = "",               
+  "SKVR01 sp007693555" = "",               
+  "SOKP01 sp013375475" = "",               
+  "SYFT01 sp016871335" = "",               
+  "SZAS-1 sp018266075" = "",               
+  "SZUA-540 sp009731355" = "",             
+  "VAZQ01 sp005883115" = "",               
+  "VBCG01 sp016716425" = "",               
+  "VBDL01 sp014873965" = "",               
+  "VFZN01 sp016871195" = "",               
+  "VGSZ01 sp016874845" = "",               
+  "WHTC01 sp009379795" = "",               
+  "WHTI01 sp009377815" = "",               
+  "WHTX01 sp009377505" = "",               
+  "WYBL01 sp011526565" = "",               
+  "12-FULL-67-14b sp016871275" = "",       
+  "CSBr16-57R1 sp007116505" = "",          
+  "CSBr16-57R1 sp018401275" = "",          
+  "PALSA-647 sp003132585" = "",            
+  "Palsa-739 sp003139545" = "",            
+  "SCSIO-52909 sp011492945" = "",          
+  "SCSIO-52909 sp902805985" = "",          
+  "SCSIO-52909 sp902812425" = "",          
+  "SEOHO-28 sp003044185" = "",             
+  "CADCWI01 sp902806355" = "",             
+  "CADEDH01 sp902826025" = "",             
+  "CAHJWH01 sp009765965" = "",             
+  "CAIKUF01 sp016702655" = "",             
+  "CAIPTA01 sp903867855" = "",             
+  "CAIQIQ01 sp903871935" = "",             
+  "CAIVZM01 sp903910385" = "",             
+  "CAIXZV01 sp903930745" = "",             
+  "CAIYRB01 sp016874735" = "",             
+  "CAIZPE01 sp016710525" = "",             
+  "CAIZWU01 sp903936775" = "",             
+  "Dongia sp000620685" = "Dongia",               
+  "HGW-BRC1-1 sp002842095" = "",           
+  "JAAUTJ01 sp014696105" = "",             
+  "JAAUTN01 sp014695345" = "",             
+  "JAAYLR01 sp016699405" = "",             
+  "JABDFB01 sp013286765" = "",             
+  "JABFSC01 sp009692435" = "",             
+  "JABFXX01 sp016720595" = "",             
+  "JACCTI01 sp902805675" = "",             
+  "JACCZE01 sp013816415" = "",             
+  "JACDCA01 sp013817065" = "",             
+  "JACQFH01 sp016200145" = "",             
+  "JACVSF01 sp014534085" = "",             
+  "JADGQX01 sp017881445" = "",             
+  "JADJHU01 sp016707425" = "",             
+  "JADJOM01 sp016713435" = "",             
+  "JADKFS01 sp016717335" = "",             
+  "JAGNHS01 sp018001635" = "",             
+  "JAGNWK01 sp017985985" = "",             
+  "MEBICO9517 sp003285105" = "",           
+  "Naasia sp017916505" = "Naasia",               
+  "Devosia sp016698645" = "Devosia",              
+  "SCGC-AG-212-J23 sp005881595" = "",      
+  "Bacillus sp000242895" = "Bacillus",             
+  "Baekduia sp000688095" = "Baekduia",             
+  "Belnapia sp016773205" = "Belnapia",             
+  "Belnapia sp902805545" = "Belnapia",             
+  "FACHB-SPT15 sp014849525" = "",          
+  "Massilia sp001412595" = "Massilia",             
+  "Massilia sp012927275" = "Massilia",             
+  "Massilia sp018119395" = "Massilia",             
+  "Massilia sp900129765" = "Massilia",             
+  "Massilia sp902506415" = "Massilia",             
+  "UM-FILTER-63-12 sp002789955" = "",      
+  "Halomonas sp900961225" = "Halomonas",            
+  "Hassallia sp002218085" = "Hassallia",            
+  "Nodularia sp015207155" = "Nodularia",            
+  "Pirellula sp001610875" = "Pirellula",            
+  "Rhodopila sp009765975" = "Rhodopila",            
+  "Aliterella sp000332075" = "Aliterella",           
+  "Aureimonas sp001425485" = "Aureimonas",           
+  "Flavitalea sp014873345" = "Flavitalea",          
+  "Luteimonas sp902506295" = "Luteimonas",           
+  "Luteitalea sp016865485" = "Luteitalea",           
+  "Microvirga sp018069605" = "Microvirga",           
+  "Nafulsella sp017948555" = "Nafulsella",           
+  "Nonomuraea sp003236395" = "Nonomuraea",           
+  "Paracoccus sp002732665" = "Paracoccus",           
+  "Paracoccus sp004335005" = "Paracoccus",           
+  "Pedococcus sp009707485" = "Pedococcus",           
+  "Roseomonas sp003173615" = "Roseomonas",           
+  "Roseomonas sp016107305" = "Roseomonas",           
+  "Roseomonas sp017355405" = "Roseomonas",           
+  "Rubrivivax sp016790225" = "Rubrivivax",          
+  "Stenomitos sp014695975" = "Stenomitos",           
+  "Trichormus sp001548375" = "Trichormus",           
+  "Variovorax sp001541225" = "Variovorax",           
+  "Variovorax sp902506565" = "Variovorax",           
+  "Actinotalea sp014042015" = "Actinotalea",          
+  "Caulobacter sp016467375" = "Caulobacter",     
+  "Cupriavidus sp001725945" = "Cupriavidus",          
+  "Kouleothrix sp016722075" = "Kouleothrix",          
+  "Neobacillus sp004341175" = "Neobacillus",          
+  "Planococcus sp000775575" = "Planococcus",          
+  "Pontibacter sp006385705" = "Pontibacter",          
+  "Ramlibacter sp013087525" = "Ramlibacter",          
+  "Rhizobacter sp001425785" = "Rhizobacter",          
+  "Rhodococcus sp005938745" = "Rhodococcus",          
+  "Roseococcus sp017355885" = "Roseococcus",          
+  "Skermanella sp016653635" = "Skermanella",          
+  "Tolypothrix sp002368435" = "Tolypothrix",          
+  "Aquihabitans sp019048865" = "Aquihabitans",         
+  "Blastococcus sp000620185" = "Blastococcus",         
+  "Blastococcus sp004570385" = "Blastococcus",         
+  "Blastococcus sp900102425" = "Blastococcus",         
+  "Blastococcus sp900188025" = "Blastococcus",         
+  "Blastococcus sp900230285" = "Blastococcus",         
+  "Cesiribacter sp000597885" = "Cesiribacter",         
+  "Gemmatimonas sp013004105" = "Gemmatimonas",         
+  "Gemmatimonas sp016720905" = "Gemmatimonas",         
+  "Hymenobacter sp012273015" = "Hymenobacter",         
+  "Nitrosomonas sp900112825" = "Nitrosomonas",         
+  "Nitrosospira sp003050965" = "Nitrosospira",         
+  "Nocardioides sp013155375" = "Nocardioides",         
+  "Nocardioides sp014360585" = "Nocardioides",         
+  "Nocardioides sp016735675" = "Nocardioides",         
+  "Nocardioides sp017916425" = "Nocardioides",         
+  "Propylenella sp900110915" = "Propylenella",         
+  "Segetibacter sp017355875" = "Segetibacter",         
+  "Streptomyces sp000527195" = "Streptomyces",         
+  "Streptomyces sp008042155" = "Streptomyces",         
+  "Modestobacter sp013408865" = "Modestobacter",        
+  "Modestobacter sp019112525" = "Modestobacter",        
+  "Paenibacillus sp000023585" = "Paenibacillus",        
+  "Paenibacillus sp008017805" = "Paenibacillus",        
+  "Paludisphaera sp001610895" = "Paludisphaera",        
+  "Salinisphaera sp003177035" = "Salinisphaera",        
+  "Salinisphaera sp017744135" = "Salinisphaera",        
+  "Bradyrhizobium sp018596315" = "Bradyrhizobium",       
+  "Ginsengibacter sp003721595" = "Ginsengibacter",       
+  "Longimicrobium sp902805735" = "Longimicrobium",       
+  "Microterricola sp003610585" = "Microterricola",       
+  "Nostoc PCC-73102 commune" = "Nostoc commune",         
+  "Pseudonocardia sp001942185" = "Pseudonocardia",       
+  "Pseudonocardia sp012911935" = "Pseudonocardia",       
+  "Rhodomicrobium sp018619475" = "Rhodomicrobium",       
+  "Steroidobacter sp016801985" = "Steroidobacter",       
+  "Croceibacterium sp003569745" = "Croceibacterium",      
+  "Croceimicrobium sp018401735" = "Croceimicrobium",      
+  "Flavisolibacter sp014163555" = "Flavisolibacter",      
+  "Phyllobacterium sp000282595" = "Phyllobacterium",      
+  "Salinimicrobium sp012038135" = "Salinimicrobium",      
+  "Solirubrobacter sp000425945" = "Solirubrobacter",      
+  "Anaeromyxobacter sp000964525" = "Anaeromyxobacter",     
+  "Calycomorphotria sp007744515" = "Calycomorphotria",     
+  "Geodermatophilus sp000701365" = "Geodermatophilus",     
+  "Methylobacterium sp001422985" = "Methylobacterium",     
+  "Methylobacterium sp003217615" = "Methylobacterium",     
+  "Paracraurococcus sp004343615" = "Paracraurococcus",     
+  "Sphingomicrobium sp000620665" = "Sphingomicrobium",     
+  "Sphingomicrobium sp014873475" = "Sphingomicrobium",     
+  "Sphingomicrobium sp016924655" = "Sphingomicrobium",     
+  "Crinalium 22.89 epipsammum"  = "Crinalium epipsammum",      
+  "Pseudarthrobacter sp002953935" = "Pseudarthrobacter",    
+  "Pseudarthrobacter sp018613805" = "Pseudarthrobacter",    
+  "Flavipsychrobacter sp004144175" = "Flavipsychrobacter",   
+  "Noviherbaspirillum sp001428545" = "Noviherbaspirillum",   
+  "Noviherbaspirillum sp003590875" = "Noviherbaspirillum",   
+  "Noviherbaspirillum sp019052805" = "Noviherbaspirillum",   
+  "Marinilactibacillus sp017599325" = "Marinilactibacillus",  
+  "Allosphingosinicella sp003347635" = "Allosphingosinicella", 
+  "Ellin5102" = "",                        
+  "soil" = ""
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = species_map,
+  column = "Species"
+)
+
+# column [Species]: 239 names updated.
+
+# update species column with corrected names
+df_trimmed <- result$data
+
+# second pass
+unique_spp2 <- unique(df_trimmed$Species)
+
+# I want the list printed with no row index:
+cat(unique_spp2, sep = "\n")
+
+
+# Segetibacter aerophilus
+# Unclassified
+# Tautonia rosea
+# Bacillus foraminis
+# Solirubrobacter ginsenosidimutans
+# Rubellimicrobium mesophilum
+# 
+# Salinimicrobium gaetbulicola
+# Abditibacterium utsteinense
+# Longimicrobium
+# Cnuella takakiae
+# Skermanella aerolata
+# Dankookia rubra
+# Arthrobacter globiformis
+# Bacillus mannanilyticus
+# Allosphingosinicella deserti
+# bacterium
+# Nostoc flagelliforme
+# Geodermatophilus obscurus
+# eubacterium
+# Brachybacterium phenoliresistens
+# Solirubrobacter
+# Gemmatirosa kalamazoonesis
+# Trichocoleus desertorum
+# Belnapia
+# Archangium gephyra
+# Aureimonas
+# Skermanella rosea
+# Armatimonadetes
+# Methyloceanibacter marginalis
+# Acidisphaera rubrifaciens
+# Bacillus litoralis
+# Sphingomonas lutea
+# Patulibacter minatonensis
+# Rhodocytophaga rosea
+# Oxobacter pfennigii
+# Schlegelella koreensis
+# Aquipuribacter hungaricus
+# Propylenella
+# Flavisolibacter
+# Pyxidicoccus fallax
+# Methylobacterium
+# Sphingomicrobium lutea
+# Massilia
+# Flavisolibacter aluminii
+# Algisphaera agarilytica
+# Nibrella saemangeumensis
+# Labilithrix luteola
+# Parviterribacter kavangonensis
+# Indioceanicola profundi
+# Sphingomicrobium
+# Priestia megaterium
+# Sporichthya polymorpha
+# Paenibacillus
+# Stigmatella aurantiaca
+# Friedmanniella capsulata
+# Mesobacillus persicus
+# Phenylobacterium muchangponense
+# Geminicoccus roseus
+# Skermanella stibiiresistens
+# Spirilliplanes yamanashiensis
+# Ramlibacter ginsenosidimutans
+# Nocardioides immobilis
+# Kocuria polaris
+# Paenibacillus paeoniae
+# Neobacillus
+# Marinilactibacillus
+# Flavisolibacter metallilatus
+# Motilibacter peucedani
+# Bacillus senegalensis
+# Nonomuraea
+# Microvirga brassicacearum
+# Altererythrobacter dongtanensis
+# Flavitalea
+# Azohydromonas aeria
+# Tautonia plasticadhaerens
+# Longimicrobium terrae
+# Microvirga
+# Singulisphaera rosea
+# Phenylobacterium terrae
+# Longivirga aurantiaca
+# Flavisolibacter ginsengiterrae
+# Hymenobacter gelipurpurascens
+# Litorilinea aerophila
+# Pontibacter locisalis
+# Pirellula staleyi
+# Flavisolibacter ginsenosidimutans
+# Maribacillus taeanensis
+# Afifella aestuarii
+# Rhodovastum atsumiense
+# Catalinimonas niigatensis
+# Bradymonas sediminis
+# Tumebacillus avium
+# Pontibacter virosus
+# Actinomycetospora cinnamomea
+# Bacillus jeotgali
+# Sphingomonas parvus
+# Sphingomicrobium astaxanthinifaciens
+# Streptomyces
+# Frankia alni
+# Adhaeribacter swui
+# Paracraurococcus
+# Fimbriiglobus ruber
+# Archangium violaceum
+# Sporocytophaga myxococcoides
+# Enterovirga rhinocerotis
+# Chthoniobacter flavus
+# Deinococcus budaensis
+# Microvirga aerilata
+# Sphaerobacter thermophilus
+# Rubrivivax
+# Geodermatophilus aquaeductus
+# Naasia
+# Geodermatophilus endophyticus
+# Flaviaesturariibacter flavus
+# Rhodococcus
+# Nitriliruptor alkaliphilus
+# Gemmatimonas
+# Nocardioides
+# Rubrobacter radiotolerans
+# Pontibacter
+# Marmoricola pocheonensis
+# Oharaeibacter diazotrophicus
+# Ramlibacter
+# Urbifossiella limnaea
+# Hwanghaeicola aestuarii
+# Niallia circulans
+# Lautropia mirabilis
+# Methylobacterium durans
+# Nocardioides thalensis
+# Aquisphaera giovannonii
+# Ramlibacter rhizophilus
+# Domibacillus mangrovi
+# Metabacillus halosaccharovorans
+# Deinococcus hopiensis
+# Devosia submarina
+# Rudaea cellulosilytica
+# Sporosarcina luteola
+# Alienimonas californiensis
+# Variovorax
+# Bacillus okhensis
+# Kineococcus siccus
+# Gimesia maris
+# Oligoflexus tunisiensis
+# Potamolinea aerugineo-caerulea
+# Geodermatophilus africanus
+# Paenibacillus cellulositrophicus
+# Blastocatella fastidiosa
+# Hassallia
+# Bacillus mesophilus
+# Actinomarinicola tropica
+# Truepera radiovictrix
+# Bdellovibrio exovorus
+# Rhodoplanes elegans
+# Rhodomicrobium
+# Hydrocarboniclastica marina
+# Tranquillimonas rosea
+# Novosphingobium fluoreni
+# Labrys wisconsinensis
+# Paenibacillus harenae
+# Tolypothrix
+# Roseococcus
+# Tundrisphaera lichenicola
+# Rubrivirga profundi
+# Ginsengibacter
+# Pontibacter chitinilyticus
+# Actinoplanes cyaneus
+# Halofilum ochraceum
+# Haliangium ochraceum
+# Conexibacter arvalis
+# Variovorax ureilyticus
+# Planococcus
+# Gemmata massiliana
+# Bacillus drentensis
+# Roseomonas frigidaquae
+# Tannerella sp002890585
+# Prosthecomicrobium hirschii
+# Microlunatus panaciterrae
+# Roseomonas vinacea
+# Noviherbaspirillum
+# Blastococcus deserti
+# Aliifodinibius sediminis
+# Croceimicrobium
+# Sphingomonas aerophila
+# Hyalangium minutum
+# Deinococcus aquiradiocola
+# Geodermatophilus
+# Ohtaekwangia koreensis
+# Pseudarthrobacter
+# Fibrella aestuarina
+# Ornithinicoccus halotolerans
+# Cupriavidus
+# Nocardioides pakistanensis
+# Microvirga soli
+# Pseudonocardia alaniniphila
+# Nocardioides szechwanensis
+# Povalibacter uvarum
+# Sporomusa sphaeroides
+# Sphingomicrobium sediminicola
+# Nafulsella
+# Desertimonas flava
+# Bauldia consociata
+# Hymenobacter cavernae
+# Actinoplanes caeruleus
+# Jeotgalibacillus campisalis
+# Microbacterium thalassium
+# Nitrosomonas
+# Nocardioides iriomotensis
+# Aggregicoccus edonensis
+# Hymenobacter chitinivorans
+# Ramlibacter solisilvae
+# Bacillus fastidiosus
+# Rubellimicrobium rubrum
+# Glycomyces tenuis
+# Botryobacter ruber
+# Nocardioides cynanchi
+# Halomonas
+# Erythrobacter suaedae
+# Aurantimonas endophytica
+# Ferruginibacter lapsinanis
+# Roseomonas aquatica
+# Pseudoduganella dura
+# Bacillus
+# Exiguobacterium chiriqhucha
+# Aridibacter nitratireducens
+# Salinimicrobium sediminis
+# Rubrivirga marina
+# Deinococcus apachensis
+# Sphingomonas sediminicola
+# Nocardioides islandensis
+# Lentzea indica
+# Cytobacillus oceanisediminis
+# Phenylobacterium kunshanense
+# Leptolyngbya boryana
+# Peribacillus simplex
+# Aliterella atlantica
+# Anaeromyxobacter
+# Bacillus niacini
+# Aquihabitans daechungensis
+# Lacipirellula parvula
+# Kouleothrix
+# Segetibacter koreensis
+# Bacillus marasmi
+# Microlunatus speluncae
+# Acidibacter ferrireducens
+# Psychrobacillus psychrodurans
+# Nitrobacter vulgaris
+# Roseomonas
+# Sphingomonas mali
+# Alsobacter soli
+# Nostoc commune
+# Aquihabitans
+# Rufibacter glacialis
+# Blastococcus colisei
+# Hymenobacter sedentarius
+# Gordonia rubripertincta
+# Sphaerospermopsis kisseleviana
+# Dyadobacter sediminis
+# Nitrospira japonica
+# Arthrobacter sp016405885
+# Noviherbaspirillum denitrificans
+# Bacillus cereus
+# Actinoplanes nipponensis
+# Desnuesiella massiliensis
+# Gillisia flava
+# Jaaginema neglectum
+# Arthrobacter ginkgonis
+# Ramlibacter soli
+# Cellulomonas carbonis
+# Luteimonas telluris
+# Steroidobacter agariperforans
+# Modestobacter
+# Psychroglaciecola arctica
+# Steroidobacter
+# 45385 sp002797395
+# Allosphingosinicella
+# Roseomonas fluminis
+# Phyllobacterium
+# Neobacillus niacini
+# Bradyrhizobium lablabi
+# Robertmurraya korlensis
+# Blastococcus
+# Bradyrhizobium elkanii
+# Salinisphaera
+# Mycobacterium moriokaense
+# Heliomicrobium modesticaldum
+# Flavipsychrobacter
+# Ornithinimicrobium pekingense
+# Arenimonas oryziterrae
+# Tepidisphaera mucosa
+# Brasilonema terrestre
+# Methylobacterium nodulans
+# Bacillus halosaccharovorans
+# Cellulomonas cellasea
+# Adhaeribacter pallidiroseus
+# Bacillus velezensis
+# Devosia
+# Paludisphaera
+# Sorangium cellulosum
+# Ammoniphilus resinae
+# Aliterella antarctica
+# Pseudomonas stutzeri
+# Aestuariivirga litoralis
+# Bacillus horikoshii
+# Noviherbaspirillum humi
+# Byssovorax cruenta
+# Deinococcus peraridilitoris
+# Microvirga ossetica
+# Blastococcus endophyticus
+# Kibdelosporangium persicum
+# Planococcus massiliensis
+# Sutcliffiella halmapala
+# Luteitalea
+# Arthrobacter crystallopoietes
+# Actinotalea
+# Methylocystis echinoides
+# Trichormus
+# Oleiliquidispirillum nitrogeniifigens
+# Geodermatophilus tzadiensis
+# Lacisediminimonas profundi
+# Pseudolabrys taiwanensis
+# Halosaccharopolyspora lacisalsi
+# Nostoc .
+# Pullulanibacillus pueri
+# Microbulbifer taiwanensis
+# Nodularia
+# Isoptericola variabilis
+# Streptomyces canus
+# Hymenobacter tibetensis
+# Pseudoduganella armeniaca
+# Deinococcus irradiatisoli
+# Hymenobacter xinjiangensis
+# Adhaeribacter aquaticus
+# Blastococcus aggregatus
+# Rhodopila
+# Pseudoduganella lutea
+# Cryobacterium tepidiphilum
+# Sporacetigenium mesophilum
+# Bacillus krulwichiae
+# Streptomyces lavendulae
+# Nitrosospira
+# Nocardioides alpinus
+# Anaerosolibacter carboniphilus
+# Nocardioides kandeliae
+# Methylocella palsarum
+# Flavisolibacter tropicus
+# Microvirga pakistanensis
+# Candidatus Koribacter Koribacter
+# Acidobacteria
+# Bacillus carboniphilus
+# Deinococcus navajonensis
+# Pseudonocardia
+# Halomonas lutea
+# Pseudobacteriovorax antillogorgiicola
+# Paracoccus
+# Cohnella panacarvi
+# Quisquiliibacterium transsilvanicum
+# Nibribacter koreensis
+# Crinalium epipsammum
+# Neobacillus salipaludis
+# Nitrospira lenta
+# Zhihengliuella halotolerans
+# Bradyrhizobium
+# Actinoplanes azureus
+# Bacillus berkeleyi
+# Ferruginibacter paludis
+# Angustibacter speluncae
+# Bacillus anthracis
+# Phaselicystis flava
+# Planomicrobium chinense
+# Cupriavidus gilardii
+# Arthrobacter agilis
+# Massilia agilis
+# Promicromonospora sukumoe
+# Sphingoaurantiacus polygranulatus
+# Sphingomonas lenta
+# Sphingomicrobium ginsengisoli
+# Rossellomorea vietnamensis
+# Microvirga aerophila
+# Amycolatopsis marina
+# Cystobacter fuscus
+# Polyangium spumosum
+# Bacillus salsus
+# Propionicimonas paludicola
+# Sphingomonas agri
+# Ramlibacter alkalitolerans
+# Deinococcus humi
+# Sphingomonas xinjiangensis
+# Adhaeribacter radiodurans
+# Methylobacterium segetis
+# Pseudosporangium ferrugineum
+# Geodermatophilus arenarius
+# Pontibacter beigongshangensis
+# Stenomitos
+# Desertibacter xinjiangensis
+# Dongia
+# Virgisporangium aliadipatigenens
+# sponge
+# Tellurimicrobium multivorans
+# Baekduia woesei
+# Pedococcus
+# Stenotrophobacter roseus
+# Variibacter gotjawalensis
+# Chloroflexi
+# Novosphingobium stygium
+# Lentzea flaviverrucosa
+# Caenimonas koreensis
+# Sphingomicrobium piscis
+# Bacillus niabensis
+# Ramlibacter monticola
+# Nocardioides antri
+# Roseimaritima ulvae
+# Friedmanniella spumicola
+# Loriellopsis cavernicola
+# Geodermatophilus sabuli
+# Symbiobacterium thermophilum
+# Bacillus aquimaris
+# Pelagibacterium luteolum
+# Deinococcus pimensis
+# Siccirubricoccus phaeus
+# Citreimonas salinaria
+# Microterricola
+# Aliterella
+# Bacillus haynesii
+# Pseudarthrobacter phenanthrenivorans
+# Baekduia
+# Massilia timonae
+# Acinetobacter ursingii
+# Rummeliibacillus pycnus
+# Teredinibacter waterburyi
+# Sphingomonas ginsengisoli
+# Rubellimicrobium roseum
+# Arboricoccus pini
+# Nannocystis exedens
+# Actinophytocola oryzae
+# Altererythrobacter xinjiangensis
+# Bacillus decolorationis
+# Bacillus timonensis
+# Oryzobacter terrae
+# Pseudonocardia sichuanensis
+# Mesobacillus subterraneus
+# Phenylobacterium haematophilum
+# Staphylococcus succinus
+# Pseudoxanthomonas gei
+# Pontibacter sp014297265
+# Rhabdothermincola sediminis
+# Acetoanaerobium sticklandii
+# Blastococcus massiliensis
+# Geothermomicrobium terrae
+# Afifella pfennigii
+# Herpetosiphon aurantiacus
+# Phytoactinopolyspora alkaliphila
+# Microvirga mediterraneensis
+# Arthrobacter pigmenti
+# Segetibacter
+# Adhaeribacter rhizoryzae
+# Halomonas zincidurans
+# Luteitalea pratensis
+# Cystobacter gracilis
+# Microvirga flavescens
+# Nocardioides halotolerans
+# Pseudorhodoplanes sinuspersici
+# Rhizobacter
+# Parviterribacter multiflagellatus
+# Sutcliffiella cohnii
+# Phenylobacterium zucineum
+# Solirubrobacter soli
+# Cesiribacter
+# Nakamurella flava
+# Caulobacter
+# Salinimicrobium
+# Constrictibacter antarcticus
+# Sphingomonas palustris
+# Sandaracinus amylolyticus
+# Bacillus zeae
+# Polyangium fumosum
+# Microvirga massiliensis
+# Flavisolibacter nicotianae
+# Nocardioides kongjuensis
+# Bacillus megaterium
+# Laterigemmans baculatus
+# Nitrospira defluvii
+# Rhodovulum euryhalinum
+# Vicinamibacter silvestris
+# Calycomorphotria
+# Croceibacterium
+# Thermobaculum terrenum
+# sludge
+# Tsuneonella deserti
+# Hymenobacter
+# Noviherbaspirillum suwonense
+# Reyranella terrae
+# Singulisphaera acidiphila
+# Luteimonas
+# Piscinibacter defluvii
+# Ferruginivarius sediminum
+# Hymenobacter roseosalivarius
+# Euzebya tangerina
+# Ramlibacter tataouinensis
+# Nodosilinea tenue
+# Paracnuella aquatica
+# Agrococcus jenensis
+# Roseisolibacter agri
+# Ramlibacter henchirensis
+# Humisphaera borealis
+# Microlunatus lacustris
+# Devosia geojensis
+# Armatimonas rosea
+# Pirellula
+# Solibacter usitatus
+# Corallococcus terminator
+# Pseudonocardia profundimaris
+# Geodermatophilus bullaregiensis
+# Microvirga lupini
+# Roseomonas rosea
+# Chungangia koreensis
+# Skermanella
+# Bosea robiniae
+# Microvirga lotononidis
+# Roseomonas gilardii
+# Aciditerrimonas ferrireducens
+# Iamia majanohamensis
+# Flavisolibacter galbus
+# Cellulomonas aerilata
+# Pontibacter jeungdoensis
+
+
+# Create a list of taxa to remove
+# will remove invalid names missed by function
+# will remove unclassified (
+
+species_map2 <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "Unclassified" = "",                     
+  "bacterium" = "", 
+  "eubacterium" = "", 
+  "45385 sp002797395" = "", 
+  "Nostoc ." = "Nostoc", 
+  "sponge" = "", 
+  "sludge" = ""  
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = species_map2,
+  column = "Species"
+)
+
+# Column [Species]: 320 names updated.
+
+
+# update species column with corrected names
+df_trimmed <- result$data
+
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.species.fixed.rds")
+
+
+
+```
+
+
+### STEP 3: Clean Genus column 
+
+Check if any single, double or triple string in genus column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any genus with numbers in the name (e.g. placeholder names)
+
+```{r}
+
+# load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.species.fixed.rds")
+
+# find taxa with orphans
+
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Genus), ]
+
+# View the first few hits
+head(matches)
+
+#       Domain        Phylum          Class            Order               Family               Genus
+# 672 Bacteria Cyanobacteria Cyanobacteriia Cyanobacteriales Chroococcidiopsaceae Crinalium SAG 22.89
+#                  Species
+# 672 Crinalium epipsammum
+
+
+## Run the function to clean orphaned letters from genus
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+
+results <- lpsn_utils$clean_orphaned_letters(
+  df_trimmed,     # data frame
+  "Genus",      # column name
+  max_letters = 3 # max number of sequential UPPERCASE letters
+  )
+
+# number of orphaned letters found
+# Cleaning complete. 2 rows modified..
+
+# Report of changes
+report_genus <- results$report
+
+# Quick look at the top of the report in the console
+head(report_genus)
+
+#   Row_Index            Original         Cleaned
+# 1       672 Crinalium SAG 22.89 Crinalium 22.89
+
+# assign the updated data to the original dataframe
+df_trimmed <- results$data
+
+# check specific row number to confirm change. eg row index 672
+print(df_trimmed)[672,]
+#       Domain        Phylum          Class            Order               Family           Genus
+# 672 Bacteria Cyanobacteria Cyanobacteriia Cyanobacteriales Chroococcidiopsaceae Crinalium 22.89
+#                  Species
+# 672 Crinalium epipsammum
+
+# save report as csv if needed - as a log of changes from function
+utils::write.csv(
+  report_genus,
+  file = "genus_cleaning_report.csv",
+  row.names = FALSE
+)
+
+
+# check for short taxa names and taxa with numbers
+
+genus_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Genus",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "genus_suspicious_taxa.csv"
+)
+
+# 121 suspicious unique taxa identified in 'Genus'.
+
+# list unique instances of suspicious taxa
+# Please NOTE: taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_gen <- unique(genus_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_gen, sep = "\n")
+
+# list of suspicious genera
+# Crinalium 22.89
+# Nostoc PCC-73102
+# 45385
+# G192
+# R267
+# AC-14
+# AC-51
+# AG11
+# AR9
+# AV80
+# BD2-11
+# DP-1
+# ER46
+# Ga0074137
+# Ga0077545
+# JJ008
+# R-H-3
+# SB21
+# Bin16
+# DYL19
+# FEB-7
+# GCA-016699535
+# Iso899
+# JKG1
+# KBS-96
+# OLB15
+# OLB17
+# OLB7
+# PCC7113
+# SCN-69-37
+# SCN-69-89
+# SCN-70-22
+# SDU3-3
+# UBA1941
+# UBA2466
+# UBA3254
+# UBA4093
+# UBA4720
+# UBA5189
+# UBA6163
+# UBA668
+# UBA8639
+# Z2-YC6860
+# 2-12-FULL-64-23
+# DB6-IX
+# DSGV01
+# DSJA01
+# IMCC26207
+# LNNU-3342
+# MPNL01
+# PSRF01
+# QHVH01
+# QHXM01
+# SCUB01
+# SHVA01
+# SIAJ01
+# SIRX01
+# SKVR01
+# SOKP01
+# SYFT01
+# SZAS-1
+# SZUA-540
+# VAZQ01
+# VBCG01
+# VBDL01
+# VFZN01
+# VGSZ01
+# WHTC01
+# WHTI01
+# WHTX01
+# WYBL01
+# 12-FULL-67-14b
+# CSBr16-57R1
+# FACHB-68
+# PALSA-647
+# Palsa-739
+# SCSIO-52909
+# SEOHO-28
+# CADCWI01
+# CADEDH01
+# CAHJWH01
+# CAIKUF01
+# CAIPTA01
+# CAIQIQ01
+# CAIVZM01
+# CAIXZV01
+# CAIYRB01
+# CAIZPE01
+# CAIZWU01
+# HGW-BRC1-1
+# JAAUTJ01
+# JAAUTN01
+# JAAYLR01
+# JABDFB01
+# JABFSC01
+# JABFXX01
+# JACCTI01
+# JACCZE01
+# JACDCA01
+# JACQFH01
+# JACVSF01
+# JADGQX01
+# JADJHU01
+# JADJOM01
+# JADKFS01
+# JAGNHS01
+# JAGNWK01
+# MEBICO9517
+# SCGC-AG-212-J23
+# FACHB-SPT15
+# UM-FILTER-63-12
+# 
+# Bosea
+# Iamia
+# Afipia
+# Dongia
+# Labrys
+# Naasia
+# Nostoc
+# Rudaea
+# Stella
+
+
+# add the changes to the list and run function to clean names
+genus_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "Crinalium 22.89" = "", 
+  "Nostoc PCC-73102" = "", 
+  "45385" = "",            
+  "G192" = "",             
+  "R267" = "",             
+  "AC-14" = "",            
+  "AC-51" = "",            
+  "AG11" = "",             
+  "AR9" = "",              
+  "AV80" = "",             
+  "BD2-11" = "",           
+  "DP-1" = "",             
+  "ER46" = "",             
+  "Ga0074137" = "",        
+  "Ga0077545" = "",        
+  "JJ008" = "",            
+  "R-H-3" = "",            
+  "SB21" = "",             
+  "Bin16" = "",            
+  "DYL19" = "",            
+  "FEB-7" = "",            
+  "GCA-016699535" = "",    
+  "Iso899" = "",           
+  "JKG1" = "",             
+  "KBS-96" = "",           
+  "OLB15" = "",            
+  "OLB17" = "",            
+  "OLB7" = "",             
+  "PCC7113" = "",          
+  "SCN-69-37" = "",        
+  "SCN-69-89" = "",        
+  "SCN-70-22" = "",        
+  "SDU3-3" = "",           
+  "UBA1941" = "",          
+  "UBA2466" = "",          
+  "UBA3254" = "",          
+  "UBA4093" = "",          
+  "UBA4720" = "",          
+  "UBA5189" = "",          
+  "UBA6163" = "",          
+  "UBA668" = "",           
+  "UBA8639" = "",          
+  "Z2-YC6860" = "",        
+  "2-12-FULL-64-23" = "",  
+  "DB6-IX" = "",           
+  "DSGV01" = "",           
+  "DSJA01" = "",           
+  "IMCC26207" = "",        
+  "LNNU-3342" = "",        
+  "MPNL01" = "",           
+  "PSRF01" = "",           
+  "QHVH01" = "",           
+  "QHXM01" = "",           
+  "SCUB01" = "",           
+  "SHVA01" = "",           
+  "SIAJ01" = "",           
+  "SIRX01" = "",           
+  "SKVR01" = "",           
+  "SOKP01" = "",           
+  "SYFT01" = "",           
+  "SZAS-1" = "",           
+  "SZUA-540" = "",         
+  "VAZQ01" = "",           
+  "VBCG01" = "",           
+  "VBDL01" = "",           
+  "VFZN01" = "",           
+  "VGSZ01" = "",           
+  "WHTC01" = "",           
+  "WHTI01" = "",           
+  "WHTX01" = "",           
+  "WYBL01" = "",           
+  "12-FULL-67-14b" = "",   
+  "CSBr16-57R1" = "",      
+  "FACHB-68" = "",         
+  "PALSA-647" = "",        
+  "Palsa-739" = "",        
+  "SCSIO-52909" = "",      
+  "SEOHO-28" = "",         
+  "CADCWI01" = "",         
+  "CADEDH01" = "",         
+  "CAHJWH01" = "",         
+  "CAIKUF01" = "",         
+  "CAIPTA01" = "",         
+  "CAIQIQ01" = "",         
+  "CAIVZM01" = "",         
+  "CAIXZV01" = "",         
+  "CAIYRB01" = "",         
+  "CAIZPE01" = "",         
+  "CAIZWU01" = "",         
+  "HGW-BRC1-1" = "",       
+  "JAAUTJ01" = "",         
+  "JAAUTN01" = "",         
+  "JAAYLR01" = "",         
+  "JABDFB01" = "",         
+  "JABFSC01" = "",         
+  "JABFXX01" = "",         
+  "JACCTI01" = "",         
+  "JACCZE01" = "",         
+  "JACDCA01" = "",         
+  "JACQFH01" = "",         
+  "JACVSF01" = "",         
+  "JADGQX01" = "",         
+  "JADJHU01" = "",         
+  "JADJOM01" = "",         
+  "JADKFS01" = "",         
+  "JAGNHS01" = "",         
+  "JAGNWK01" = "",         
+  "MEBICO9517" = "",       
+  "SCGC-AG-212-J23" = "",  
+  "FACHB-SPT15" = "",      
+  "UM-FILTER-63-12" = ""
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = genus_map,
+   column = "Genus"
+)
+
+# Column [Genus]: 134 names updated.
+
+# check the changes
+result$report
+#     Column         Original Updated
+# 1    Genus           QHXM01        
+# 2    Genus         JACCTI01        
+# 3    Genus            OLB17        
+# 4    Genus           SHVA01        
+# 5    Genus             ER46        
+# 6    Genus             JKG1        
+# 7    Genus         JACDCA01        
+# 8    Genus           VBDL01        
+# 9    Genus          PCC7113        
+# 10   Genus        Ga0074137        
+# 11   Genus         JAAYLR01        
+# 12   Genus   12-FULL-67-14b        
+# 13   Genus         JADGQX01        
+# 14   Genus           VAZQ01        
+# 15   Genus    GCA-016699535        
+# 16   Genus          UBA5189        
+# 17   Genus           SOKP01        
+# 18   Genus        Palsa-739        
+# 19   Genus           SZAS-1        
+# 20   Genus           SKVR01        
+# 21   Genus        PALSA-647        
+# 22   Genus            OLB15        
+# 23   Genus           SIRX01        
+# 24   Genus         JACQFH01        
+# 25   Genus          UBA8639        
+# 26   Genus           QHVH01        
+# 27   Genus         JADJHU01        
+# 28   Genus          UBA6163        
+# 29   Genus           SDU3-3        
+# 30   Genus      FACHB-SPT15        
+# 31   Genus         SZUA-540        
+# 32   Genus           WHTI01        
+# 33   Genus         CADCWI01        
+# 34   Genus           VBCG01        
+# 35   Genus          UBA4720        
+# 36   Genus         CAHJWH01        
+# 37   Genus         CAIQIQ01        
+# 38   Genus           BD2-11        
+# 39   Genus        SCN-69-37        
+# 40   Genus      SCSIO-52909        
+# 41   Genus  2-12-FULL-64-23        
+# 42   Genus           KBS-96        
+# 43   Genus       MEBICO9517        
+# 44   Genus          UBA2466        
+# 45   Genus       HGW-BRC1-1        
+# 46   Genus         JABDFB01        
+# 47   Genus           SYFT01        
+# 48   Genus            DYL19        
+# 49   Genus         JADJOM01        
+# 50   Genus         JACVSF01        
+# 51   Genus          UBA3254        
+# 52   Genus           Iso899        
+# 53   Genus           VGSZ01        
+# 54   Genus Nostoc PCC-73102        
+# 55   Genus      CSBr16-57R1        
+# 56   Genus             DP-1        
+# 57   Genus           SIAJ01        
+# 58   Genus         CAIPTA01        
+# 59   Genus            45385        
+# 60   Genus           WYBL01        
+# 61   Genus         SEOHO-28        
+# 62   Genus         JABFSC01        
+# 63   Genus         JACCZE01        
+# 64   Genus        Ga0077545        
+# 65   Genus         FACHB-68        
+# 66   Genus             OLB7        
+# 67   Genus            AC-51        
+# 68   Genus         CAIYRB01        
+# 69   Genus           WHTX01        
+# 70   Genus             SB21        
+# 71   Genus             AV80        
+# 72   Genus           VFZN01        
+# 73   Genus         JAAUTN01        
+# 74   Genus  Crinalium 22.89        
+# 75   Genus         JAAUTJ01        
+# 76   Genus          UBA4093        
+# 77   Genus          UBA1941        
+# 78   Genus           SCUB01        
+# 79   Genus           DSGV01        
+# 80   Genus         JABFXX01        
+# 81   Genus         CADEDH01        
+# 82   Genus        IMCC26207        
+# 83   Genus         JADKFS01        
+# 84   Genus           DB6-IX        
+# 85   Genus              AR9        
+# 86   Genus             G192        
+# 87   Genus            R-H-3        
+# 88   Genus            FEB-7        
+# 89   Genus         CAIZWU01        
+# 90   Genus            AC-14        
+# 91   Genus         CAIVZM01        
+# 92   Genus        SCN-70-22        
+# 93   Genus            Bin16        
+# 94   Genus         JAGNWK01        
+# 95   Genus         CAIZPE01        
+# 96   Genus        LNNU-3342        
+# 97   Genus        SCN-69-89        
+# 98   Genus         JAGNHS01        
+# 99   Genus           UBA668        
+# 100  Genus         CAIKUF01        
+# 101  Genus  SCGC-AG-212-J23        
+# 102  Genus  UM-FILTER-63-12        
+# 103  Genus           DSJA01        
+# 104  Genus           MPNL01        
+# 105  Genus           PSRF01        
+# 106  Genus        Z2-YC6860        
+# 107  Genus             R267        
+# 108  Genus         CAIXZV01        
+# 109  Genus           WHTC01        
+# 110  Genus             AG11        
+# 111  Genus            JJ008 
+
+# Update table
+df_trimmed <- result$data
+
+# # second pass
+unique_gen2 <- unique(df_trimmed$Genus)
+
+# I want the list printed with no row index:
+cat(unique_gen2, sep = "\n")
+
+# Segetibacter
+# Unclassified
+# Tautonia
+# Bacillus
+# Solirubrobacter
+# Rubellimicrobium
+# 
+# Salinimicrobium
+# Abditibacterium
+# Longimicrobium
+# Cnuella
+# Skermanella
+# Deinococcus
+# Dankookia
+# Arthrobacter
+# Luteitalea
+# Allosphingosinicella
+# Nostoc
+# Geodermatophilus
+# Brachybacterium
+# Gemmatirosa
+# Nocardioides
+# Trichocoleus
+# Belnapia
+# Archangium
+# Massilia
+# Rufibacter
+# Aureimonas
+# Pseudonocardia
+# Methyloceanibacter
+# Acidisphaera
+# Sphingomonas
+# Flavisolibacter
+# Patulibacter
+# Rhodocytophaga
+# Oxobacter
+# Schlegelella
+# Myxococcus
+# Aquipuribacter
+# Propylenella
+# Pyxidicoccus
+# Microcoleus
+# Methylobacterium
+# Afipia
+# Sphingomicrobium
+# Algisphaera
+# Nibrella
+# Kribbella
+# Labilithrix
+# Parviterribacter
+# Indioceanicola
+# Priestia
+# Sporichthya
+# Paenibacillus
+# Stigmatella
+# Friedmanniella
+# Mesobacillus
+# Actinoplanes
+# Phenylobacterium
+# Lacisediminimonas
+# Niallia
+# Geminicoccus
+# Gemmatimonas
+# Spirilliplanes
+# Ramlibacter
+# Kocuria
+# Blastococcus
+# Neobacillus
+# Noviherbaspirillum
+# Marinilactibacillus
+# Gillisia
+# Microbacterium
+# Motilibacter
+# Aliterella
+# Nonomuraea
+# Microvirga
+# Altererythrobacter
+# Streptomyces
+# Flavitalea
+# Azohydromonas
+# Singulisphaera
+# Longivirga
+# Hymenobacter
+# Litorilinea
+# Pontibacter
+# Pirellula
+# Maribacillus
+# Afifella
+# Azospirillum
+# Rhodovastum
+# Catalinimonas
+# Bradymonas
+# Tumebacillus
+# Actinomycetospora
+# Frankia
+# Pseudarthrobacter
+# Adhaeribacter
+# Paracraurococcus
+# Fimbriiglobus
+# Sporocytophaga
+# Enterovirga
+# Chthoniobacter
+# Sphaerobacter
+# Rubrivivax
+# Naasia
+# Gimesia
+# Flaviaesturariibacter
+# Rhodococcus
+# Nitriliruptor
+# Rubrobacter
+# Marmoricola
+# Oharaeibacter
+# Urbifossiella
+# Hwanghaeicola
+# Lautropia
+# Aquisphaera
+# Domibacillus
+# Metabacillus
+# Devosia
+# Rudaea
+# Sporosarcina
+# Alienimonas
+# Variovorax
+# Kineococcus
+# Oligoflexus
+# Bordetella
+# Geomonas
+# Potamolinea
+# Isoptericola
+# Blastocatella
+# Hassallia
+# Actinomarinicola
+# Truepera
+# Bdellovibrio
+# Rhodoplanes
+# Rhodomicrobium
+# Hydrocarboniclastica
+# Tranquillimonas
+# Novosphingobium
+# Labrys
+# Tolypothrix
+# Roseococcus
+# Tundrisphaera
+# Rubrivirga
+# Ginsengibacter
+# Cupriavidus
+# Cytobacillus
+# Halofilum
+# Haliangium
+# Conexibacter
+# Planococcus
+# Gemmata
+# Psychrobacillus
+# Roseomonas
+# Tannerella
+# Prosthecomicrobium
+# Microlunatus
+# Aliifodinibius
+# Polaromonas
+# Croceimicrobium
+# Hyalangium
+# Ohtaekwangia
+# Fibrella
+# Ornithinicoccus
+# Povalibacter
+# Sporomusa
+# Teredinibacter
+# Nafulsella
+# Legionella
+# Desertimonas
+# Bauldia
+# Jeotgalibacillus
+# Nitrosomonas
+# Aggregicoccus
+# Lysobacter
+# Sorangium
+# Glycomyces
+# Hyphomicrobium
+# Botryobacter
+# Halomonas
+# Erythrobacter
+# Aurantimonas
+# Ferruginibacter
+# Pseudoduganella
+# Exiguobacterium
+# Aridibacter
+# Aromatoleum
+# Lentzea
+# Neorhizobium
+# Leptolyngbya
+# Peribacillus
+# Anaeromyxobacter
+# Aquihabitans
+# Lacipirellula
+# Kouleothrix
+# Acidibacter
+# Caldilinea
+# Nitrobacter
+# Cellulomonas
+# Agromyces
+# Alsobacter
+# Gordonia
+# Sphaerospermopsis
+# Dyadobacter
+# Nitrospira
+# Desnuesiella
+# Jaaginema
+# Luteimonas
+# Steroidobacter
+# Modestobacter
+# Psychroglaciecola
+# Phyllobacterium
+# Bradyrhizobium
+# Robertmurraya
+# Salinisphaera
+# Mesorhizobium
+# Mycobacterium
+# Heliomicrobium
+# Flavipsychrobacter
+# Ornithinimicrobium
+# Arenimonas
+# Tepidisphaera
+# Brasilonema
+# Micromonospora
+# Paludisphaera
+# Ammoniphilus
+# Pseudomonas
+# Aestuariivirga
+# Byssovorax
+# Kibdelosporangium
+# Sutcliffiella
+# Actinotalea
+# Methylocystis
+# Trichormus
+# Oleiliquidispirillum
+# Pseudolabrys
+# Halosaccharopolyspora
+# Chelatococcus
+# Pullulanibacillus
+# Microbulbifer
+# Nodularia
+# Spirosoma
+# Rhodopila
+# Cryobacterium
+# Sporacetigenium
+# Nitrosospira
+# Anaerosolibacter
+# Methylocella
+# Candidatus Koribacter
+# Terrabacter
+# Pseudobacteriovorax
+# Paracoccus
+# Cohnella
+# Quisquiliibacterium
+# Nibribacter
+# Zhihengliuella
+# Angustibacter
+# Phaselicystis
+# Azonexus
+# Staphylococcus
+# Planomicrobium
+# Promicromonospora
+# Sphingoaurantiacus
+# Rossellomorea
+# Amycolatopsis
+# Cystobacter
+# Polyangium
+# Propionicimonas
+# Shinella
+# Pseudosporangium
+# Stenomitos
+# Desertibacter
+# Dongia
+# Virgisporangium
+# Tellurimicrobium
+# Baekduia
+# Pedococcus
+# Ureibacillus
+# Stenotrophobacter
+# Variibacter
+# Crinalium
+# Caenimonas
+# Evansella
+# Cryptosporangium
+# Roseimaritima
+# Loriellopsis
+# Croceibacterium
+# Symbiobacterium
+# Pelagibacterium
+# Siccirubricoccus
+# Citreimonas
+# Microterricola
+# Acinetobacter
+# Rummeliibacillus
+# Caulobacter
+# Arboricoccus
+# Nannocystis
+# Actinophytocola
+# Oryzobacter
+# Dolichospermum
+# Pseudoxanthomonas
+# Rhabdothermincola
+# Acetoanaerobium
+# Geothermomicrobium
+# Herpetosiphon
+# Phytoactinopolyspora
+# Luteolibacter
+# Stella
+# Pseudorhodoplanes
+# Duganella
+# Rhizobacter
+# Cesiribacter
+# Nakamurella
+# Constrictibacter
+# Sandaracinus
+# Mucilaginibacter
+# Laterigemmans
+# Rhodovulum
+# Vicinamibacter
+# Calycomorphotria
+# Thermobaculum
+# Tsuneonella
+# Reyranella
+# Piscinibacter
+# Ferruginivarius
+# Euzebya
+# Nodosilinea
+# Paracnuella
+# Agrococcus
+# Roseisolibacter
+# Humisphaera
+# Armatimonas
+# Solibacter
+# Corallococcus
+# Chungangia
+# Bosea
+# Aciditerrimonas
+# Iamia
+# Solirubrum
+
+# Remove th following:
+# Unclassified
+
+genus_map2 <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "Unclassified" = ""
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = genus_map2,
+  column = "Genus"
+)
+
+# Column [Genus]: 177 names updated.
+
+result$report
+
+#   Column     Original Updated
+# 1  Genus Unclassified        
+
+# update species column with corrected names
+df_trimmed <- result$data
+
+
+# save genus updated object
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.genus.fixed.rds")
+
+```
+
+
+### STEP 4: Clean Family column 
+
+Check if any single, double or triple string in family column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any family with numbers in the name (e.g. placeholder names)
+
+```{r}
+# load object 
+df_trimmed <- readRDS(df_trimmed, file = "taxonomy.genus.fixed.rds")
+
+
+# find taxa with orphans
+
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Family), ]
+
+# View the first few hits
+head(matches)
+
+# No taxa names with orphans
+
+# [1] Domain  Phylum  Class   Order   Family  Genus   Species
+# <0 rows> (or 0-length row.names)
+
+############### Do not complete the following:
+## Run the function to clean orphaned letters from family
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+
+results <- lpsn_utils$clean_orphaned_letters(
+  df_trimmed,     # data frame
+  "Family",      # column name
+  max_letters = 3 # max number of sequential UPPERCASE letters
+  )
+
+
+# Report of changes
+report_family <- results$report
+
+# Quick look at the top of the report in the console
+head(report_family)
+
+
+
+# assign the updated data to the original dataframe
+df_trimmed <- results$data
+
+# check specific row number to confirm change. eg row index 1752
+print(df_trimmed)[1752,]
+
+
+# save report as csv if needed - as a log of changes from function
+utils::write.csv(
+  report_family,
+  file = "family_cleaning_report.csv",
+  row.names = FALSE
+)
+#########################################
+
+# Continue from here
+
+# check for short taxa names and taxa with numbers
+family_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Family",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "family_suspicious_taxa.csv"
+)
+
+# 68 suspicious unique taxa identified in 'Family'.
+
+# list unique instances of suspicious taxa
+# Please NOTE: taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_fam <- unique(family_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_fam, sep = "\n")
+
+# 172606-1
+# 70-9
+# J036
+# V1-33
+# A4b
+# AC-14
+# LD1
+# SB21
+# SG8-39
+# Bin18
+# Bog-1112
+# CSP1-4
+# CSP1-6
+# DSM-1321
+# DSM-18226
+# DSM-27016
+# Fen-336
+# GCA-016699535
+# GWC2-71-9
+# JCM-10596
+# OLB7
+# RSA9
+# SCN-69-37
+# UBA1018
+# UBA10450
+# UBA10511
+# UBA11346
+# UBA1268
+# UBA2241
+# UBA2428
+# UBA2466
+# UBA2595
+# UBA2963
+# UBA2999
+# UBA3254
+# UBA4093
+# UBA4248
+# UBA4665
+# UBA5704
+# UBA6265
+# UBA6769
+# UBA6960
+# UBA7656
+# UBA7960
+# UBA8139
+# UBA8639
+# UBA9968
+# 2-12-FULL-66-21
+# DSGV01
+# HTCC2089
+# NBRC-103111
+# RAOX-1
+# RGVZ01
+# SIBE01
+# SKKL01
+# SOKP01
+# SZAS-1
+# SZUA-35
+# SZUA-540
+# VGSZ01
+# WHSQ01
+# HRBIN12
+# MEBIC09517
+# CAIPTA01
+# CAIXPF01
+# JAAYBP01
+# Verrucomicrobia_subdivision_3
+
+
+# add the changes to the list and run function to clean names
+# add unclassified to list
+family_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "172606-1" = "",
+  "70-9" = "",
+  "J036" = "",
+  "V1-33" = "",
+  "A4b" = "",
+  "AC-14" = "",
+  "LD1" = "",
+  "SB21" = "",
+  "SG8-39" = "",
+  "Bin18" = "",
+  "Bog-1112" = "",
+  "CSP1-4" = "",
+  "CSP1-6" = "",
+  "DSM-1321" = "",
+  "DSM-18226" = "",
+  "DSM-27016" = "",
+  "Fen-336" = "",
+  "GCA-016699535" = "",
+  "GWC2-71-9" = "",
+  "JCM-10596" = "",
+  "OLB7" = "",
+  "RSA9" = "",
+  "SCN-69-37" = "",
+  "UBA1018" = "",
+  "UBA10450" = "",
+  "UBA10511" = "",
+  "UBA11346" = "",
+  "UBA1268" = "",
+  "UBA2241" = "",
+  "UBA2428" = "",
+  "UBA2466" = "",
+  "UBA2595" = "",
+  "UBA2963" = "",
+  "UBA2999" = "",
+  "UBA3254" = "",
+  "UBA4093" = "",
+  "UBA4248" = "",
+  "UBA4665" = "",
+  "UBA5704" = "",
+  "UBA6265" = "",
+  "UBA6769" = "",
+  "UBA6960" = "",
+  "UBA7656" = "",
+  "UBA7960" = "",
+  "UBA8139" = "",
+  "UBA8639" = "",
+  "UBA9968" = "",
+  "2-12-FULL-66-21" = "",
+  "DSGV01" = "",
+  "HTCC2089" = "",
+  "NBRC-103111" = "",
+  "RAOX-1" = "",
+  "RGVZ01" = "",
+  "SIBE01" = "",
+  "SKKL01" = "",
+  "SOKP01" = "",
+  "SZAS-1" = "",
+  "SZUA-35" = "",
+  "SZUA-540" = "",
+  "VGSZ01" = "",
+  "WHSQ01" = "",
+  "HRBIN12" = "",
+  "MEBIC09517" = "",
+  "CAIPTA01" = "",
+  "CAIXPF01" = "",
+  "JAAYBP01" = "",
+  "Verrucomicrobia_subdivision_3" =  "",
+  "Unclassified" = ""
+)
+
+
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = family_map,
+  column = "Family"
+)
+
+# Column [Family]: 187 names updated.
+
+# check the changes
+result$report
+
+#    Column                      Original Updated
+# 1  Family                  Unclassified        
+# 2  Family                           A4b        
+# 3  Family                      UBA10450        
+# 4  Family                     JCM-10596        
+# 5  Family                     GWC2-71-9        
+# 6  Family                          70-9        
+# 7  Family               2-12-FULL-66-21        
+# 8  Family                      172606-1        
+# 9  Family                       UBA5704        
+# 10 Family                   NBRC-103111        
+# 11 Family                       UBA2999        
+# 12 Family                     DSM-18226        
+# 13 Family                          RSA9        
+# 14 Family                 GCA-016699535        
+# 15 Family                        CSP1-4        
+# 16 Family                        SOKP01        
+# 17 Family                        SZAS-1        
+# 18 Family                       UBA7960        
+# 19 Family                       UBA2241        
+# 20 Family                      UBA10511        
+# 21 Family                       UBA6769        
+# 22 Family                       UBA8639        
+# 23 Family                       UBA8139        
+# 24 Family                       UBA7656        
+# 25 Family                       UBA4665        
+# 26 Family                      SZUA-540        
+# 27 Family                        WHSQ01        
+# 28 Family                       UBA6265        
+# 29 Family                        SKKL01        
+# 30 Family                       UBA6960        
+# 31 Family                     SCN-69-37        
+# 32 Family                        SG8-39        
+# 33 Family                        SIBE01        
+# 34 Family                    MEBIC09517        
+# 35 Family                       UBA2466        
+# 36 Family                       UBA1018        
+# 37 Family                       UBA2595        
+# 38 Family                      DSM-1321        
+# 39 Family                       UBA3254        
+# 40 Family                        VGSZ01        
+# 41 Family                      JAAYBP01        
+# 42 Family                       UBA9968        
+# 43 Family                      CAIPTA01        
+# 44 Family                          J036        
+# 45 Family                       Fen-336        
+# 46 Family                       UBA1268        
+# 47 Family                      HTCC2089        
+# 48 Family                        RAOX-1        
+# 49 Family                         Bin18        
+# 50 Family                      UBA11346        
+# 51 Family                          OLB7        
+# 52 Family                       HRBIN12        
+# 53 Family                        RGVZ01        
+# 54 Family                      CAIXPF01        
+# 55 Family                          SB21        
+# 56 Family                       UBA4093        
+# 57 Family                           LD1        
+# 58 Family                     DSM-27016        
+# 59 Family                        DSGV01        
+# 60 Family                       SZUA-35        
+# 61 Family                        CSP1-6        
+# 62 Family                         V1-33        
+# 63 Family                         AC-14        
+# 64 Family                       UBA2963        
+# 65 Family                      Bog-1112        
+# 66 Family Verrucomicrobia_subdivision_3        
+# 67 Family                       UBA2428        
+# 68 Family                       UBA4248  
+
+# Update table
+df_trimmed <- result$data
+
+# # second pass
+unique_fam2 <- unique(df_trimmed$Family)
+
+# I want the list printed with no row index:
+cat(unique_fam2, sep = "\n")
+
+# Chitinophagaceae
+# Isosphaeraceae
+# Bacillaceae
+# Amphibacillaceae
+# Solirubrobacteraceae
+# Xanthobacteraceae
+# Rhodobacteraceae
+# Pyrinomonadaceae
+# Flavobacteriaceae
+# Abditibacteriaceae
+# Longimicrobiaceae
+# Burkholderiaceae
+# 
+# Rhodospirillaceae
+# Deinococcaceae
+# Azospirillaceae
+# Acetobacteraceae
+# Nocardioidaceae
+# Micrococcaceae
+# Vicinamibacteraceae
+# Sporolactobacillaceae
+# Hymenobacteraceae
+# Sphingomonadaceae
+# Nostocaceae
+# Geodermatophilaceae
+# Beijerinckiaceae
+# Dermabacteraceae
+# Micromonosporaceae
+# Gemmatimonadaceae
+# Trichocoleusaceae
+# Tepidisphaeraceae
+# Myxococcaceae
+# Archangiaceae
+# Opitutaceae
+# Rhizobiaceae
+# Herpetosiphonaceae
+# Pseudonocardiaceae
+# Methyloligellaceae
+# Caldilineaceae
+# Propionibacteriaceae
+# Coleofasciculaceae
+# Bdellovibrionaceae
+# Lacipirellulaceae
+# Oxobacteraceae
+# Cyclobacteriaceae
+# Intrasporangiaceae
+# Afifellaceae
+# Microcoleaceae
+# Phycisphaeraceae
+# Cytophagaceae
+# Kribbellaceae
+# Polyangiaceae
+# Parviterribacteraceae
+# Sporichthyaceae
+# Geminicoccaceae
+# Caulobacteraceae
+# Armatimonadaceae
+# Paenibacillaceae
+# Carnobacteriaceae
+# Gaiellaceae
+# Microbacteriaceae
+# Nitrospiraceae
+# Motilibacteraceae
+# Chroococcidiopsidaceae
+# Streptosporangiaceae
+# Erythrobacteraceae
+# Streptomycetaceae
+# Rubrobacteraceae
+# Anaerolineaceae
+# Pirellulaceae
+# Acidobacteriaceae
+# Legionellaceae
+# Roseiflexaceae
+# Catalimonadaceae
+# Bradymonadaceae
+# Tumebacillaceae
+# Planctomycetaceae
+# Usitatibacteraceae
+# Frankiaceae
+# Gemmataceae
+# Chthoniobacteraceae
+# Thermomicrobiaceae
+# Mycobacteriaceae
+# Nitriliruptoraceae
+# Pleomorphomonadaceae
+# Steroidobacteraceae
+# Cellvibrionaceae
+# Comamonadaceae
+# Devosiaceae
+# Rhodanobacteraceae
+# Planococcaceae
+# Kineococcaceae
+# Casimicrobiaceae
+# Oligoflexaceae
+# Geobacteraceae
+# Cellulomonadaceae
+# Blastocatellaceae
+# Trueperaceae
+# Rhodomicrobiaceae
+# Oleiphilaceae
+# Rubricoccaceae
+# Ectothiorhodospiraceae
+# Haliangiaceae
+# Conexibacteraceae
+# Tannerellaceae
+# Hyphomicrobiaceae
+# Balneolaceae
+# Schleiferiaceae
+# Fulvivirgaceae
+# Dermatophilaceae
+# Methylobacteriaceae
+# Sporomusaceae
+# Ilumatobacteraceae
+# Bryobacteraceae
+# Nitrosomonadaceae
+# Xanthomonadaceae
+# Halomonadaceae
+# Sumerlaeaceae
+# Exiguobacteraceae
+# Rhodocyclaceae
+# Thermotaleaceae
+# Leptolyngbyaceae
+# Anaeromyxobacteraceae
+# Iamiaceae
+# Phormidesmiaceae
+# Jatrophihabitantaceae
+# Methylophilaceae
+# Oxalobacteraceae
+# Clostridiaceae
+# Salinisphaeraceae
+# Heliobacteriaceae
+# Scytonemataceae
+# Pseudomonadaceae
+# Aestuariivirgaceae
+# Ruminococcaceae
+# Methylopilaceae
+# Oscillatoriaceae
+# Methylocystaceae
+# Pseudopelobacteraceae
+# Spirosomaceae
+# Peptostreptococcaceae
+# Elainellaceae
+# Chroococcidiopsaceae
+# Kineosporiaceae
+# Phaselicystidaceae
+# Anaerotignaceae
+# Staphylococcaceae
+# Chloroflexaceae
+# Dongiaceae
+# Bradyrhizobiaceae
+# Gomontiellaceae
+# Microtrichaceae
+# Salisediminibacteriaceae
+# Cryptosporangiaceae
+# Symphyonemataceae
+# Symbiobacteriaceae
+# Labilitrichaceae
+# Bacteriovoracaceae
+# Moraxellaceae
+# Nannocystaceae
+# Lachnospiraceae
+# Marinococcaceae
+# Filifactoraceae
+# Thermoactinomycetaceae
+# Rhodobiaceae
+# Domibacillaceae
+# Jiangellaceae
+# Akkermansiaceae
+# Stellaceae
+# Nakamurellaceae
+# Sandaracinaceae
+# Sphingobacteriaceae
+# Rhodovibrionaceae
+# Euzebyaceae
+# Acidimicrobiaceae
+# Egibacteraceae
+
+# no weird families -  no further cleaning required
+# save family updated object
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.family.fixed.rds")
+
+
+```
+
+
+### STEP 5: Clean Order column 
+
+Check if any single, double or triple string in order column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any order with numbers in the name (e.g. placeholder names)
+
+```{r}
+
+# load object 
+df_trimmed <- readRDS(df_trimmed, file = "./objects/taxonomy.family.fixed.rds")
+
+
+# find taxa with orphans
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Order), ]
+
+# View the first few hits
+head(matches)
+
+# # no orphans found
+# no need to run remove orphans function 
+# [1] Domain  Phylum  Class   Order   Family  Genus   Species
+# <0 rows> (or 0-length row.names)
+
+################# Do not run
+## Run the function to clean orphaned letters from order
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+# 
+# results <- lpsn_utils$clean_orphaned_letters(
+#   df_trimmed,     # data frame
+#   "Order",      # column name
+#   max_letters = 3 # max number of sequential UPPERCASE letters
+#   )
+# 
+# # number of orphaned letters found
+# 
+# 
+# # Report of changes
+# report_order <- results$report
+# 
+# # Quick look at the top of the report in the console
+# utils::head(report_order)
+# 
+# 
+# 
+# # assign the updated data to the original dataframe
+# df_trimmed <- results$data
+# 
+# # check specific row number to confirm change. eg row index 1752
+# print(df_trimmed)[1752,]
+# 
+# 
+# # save report as csv if needed - as a log of changes from function
+# utils::write.csv(
+#   report_order,
+#   file = "order_cleaning_report.csv",
+#   row.names = FALSE
+# )
+
+################### continue from here
+
+
+# check for short taxa names and taxa with numbers
+
+order_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Order",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "order_suspicious_taxa.csv"
+)
+
+# 25 suspicious unique taxa identified in 'Order'.
+
+# list unique instances of suspicious taxa
+# Please NOTE: taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_ord <- unique(order_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_ord, sep = "\n")
+
+# CR-4
+# SB21
+# Bin18
+# Fen-336
+# NS11-12g
+# OLB7
+# UBA1018
+# UBA11346
+# UBA2241
+# UBA2428
+# UBA2466
+# UBA2963
+# UBA4248
+# UBA4738
+# UBA5704
+# UBA727
+# UBA7656
+# UBA9968
+# ATCC43930
+# DSGV01
+# S15B-MN24
+# CADDZG01
+# CAILMK01
+# CAIPTA01
+
+# add the changes to the list and run function to clean names
+# add unclassified
+order_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "CR-4" = "",
+  "SB21" = "",
+  "Bin18" = "",
+  "Fen-336"= "",
+  "NS11-12g" = "",
+  "OLB7" = "",
+  "UBA1018" = "",
+  "UBA11346" = "",
+  "UBA2241" = "",
+  "UBA2428" = "",
+  "UBA2466" = "",
+  "UBA2963" = "",
+  "UBA4248" = "",
+  "UBA4738" = "",
+  "UBA5704" = "",
+  "UBA727" = "",
+  "UBA7656" = "",
+  "UBA9968" = "",
+  "ATCC43930" = "",
+  "DSGV01" = "",
+  "S15B-MN24" = "",
+  "CADDZG01" = "",
+  "CAILMK01" = "",
+  "CAIPTA01" = "",
+  "Unclassified" = ""
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = order_map,
+   column = "Order"
+)
+
+# Column [Order]: 55 names updated.
+
+# check the changes
+result$report
+     
+#    Column     Original Updated
+# 1   Order Unclassified        
+# 2   Order      UBA5704        
+# 3   Order         CR-4        
+# 4   Order      UBA2241        
+# 5   Order      UBA7656        
+# 6   Order     CAILMK01        
+# 7   Order     CADDZG01        
+# 8   Order      UBA2466        
+# 9   Order      UBA1018        
+# 10  Order       UBA727        
+# 11  Order     NS11-12g        
+# 12  Order      UBA9968        
+# 13  Order     CAIPTA01        
+# 14  Order      Fen-336        
+# 15  Order        Bin18        
+# 16  Order     UBA11346        
+# 17  Order         OLB7        
+# 18  Order      UBA4738        
+# 19  Order         SB21        
+# 20  Order    S15B-MN24        
+# 21  Order       DSGV01        
+# 22  Order    ATCC43930        
+# 23  Order      UBA2963        
+# 24  Order      UBA2428        
+# 25  Order      UBA4248   
+
+# Update table
+df_trimmed <- result$data
+
+# # second pass
+unique_ord2 <- unique(df_trimmed$Order)
+
+# I want the list printed with no row index:
+cat(unique_ord2, sep = "\n")
+
+# Chitinophagales
+# Isosphaerales
+# Bacillales
+# Solirubrobacterales
+# Rhizobiales
+# Rhodobacterales
+# Pyrinomonadales
+# Flavobacteriales
+# Abditibacteriales
+# Longimicrobiales
+# Burkholderiales
+# Cytophagales
+# Rhodospirillales
+# Deinococcales
+# Azospirillales
+# Aggregatilineales
+# Chthoniobacterales
+# Propionibacteriales
+# Micrococcales
+# Caldalkalibacillales
+# Vicinamibacterales
+# 
+# Sphingomonadales
+# Mycobacteriales
+# Cyanobacteriales
+# Gemmatimonadales
+# Actinomycetales
+# Synechococcales
+# Acetobacterales
+# Tepidisphaerales
+# Myxococcales
+# Pirellulales
+# Opitutales
+# Chloroflexales
+# Caldilineales
+# Bdellovibrionales
+# Clostridiales
+# Phycisphaerales
+# Polyangiales
+# Sporichthyales
+# Paenibacillales
+# Geminicoccales
+# Caulobacterales
+# Euzebyales
+# Rhodothermales
+# Armatimonadales
+# Limnocylindrales
+# Lactobacillales
+# Gaiellales
+# Nitrospirales
+# Bacteroidales
+# Motilibacterales
+# Streptosporangiales
+# Streptomycetales
+# Rubrobacterales
+# Anaerolineales
+# Planctomycetales
+# Acidobacteriales
+# Legionellales
+# Acidimicrobiales
+# Bradymonadales
+# Tumebacillales
+# Ectothiorhodospirales
+# Frankiales
+# Gemmatales
+# Thermomicrobiales
+# Nitriliruptorales
+# Saccharimonadales
+# Steroidobacterales
+# Pseudomonadales
+# Desulfuromonadales
+# Xanthomonadales
+# Kiloniellales
+# Oligoflexales
+# Geobacterales
+# Oscillatoriales
+# Geodermatophilales
+# Blastocatellales
+# Trueperales
+# Chromatiales
+# Haliangiales
+# Balneolales
+# Pseudonocardiales
+# Nevskiales
+# Sporomusales
+# Bryobacterales
+# Pedosphaerales
+# Acetivibrionales
+# Sumerlaeales
+# Exiguobacterales
+# Peptostreptococcales
+# Thermincolales
+# Leptolyngbyales
+# Phormidesmiales
+# Dehalococcoidales
+# Thermoflexales
+# Heliobacteriales
+# Nostocales
+# Aneurinibacillales
+# Chroococcidiopsidales
+# Oscillospirales
+# Elainellales
+# Lachnospirales
+# Kineosporiales
+# Staphylococcales
+# Micromonosporales
+# Dongiales
+# Symbiobacteriales
+# Bacteriovoracales
+# Rokubacteriales
+# Nannocystales
+# Verrucomicrobiales
+# Thermoactinomycetales
+# Jiangellales
+# Sphingobacteriales
+
+
+# no weird orders -  no further cleaning required
+
+# save order updated object
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.order.fixed.rds")
+
+```
+
+
+### STEP 6: Clean Class column 
+
+Check if any single, double or triple string in class column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any class with numbers in the name (e.g. placeholder names)
+
+```{r}
+# load object 
+df_trimmed <- readRDS(df_trimmed, file = "taxonomy.order.fixed.rds")
+
+# find taxa with orphans
+
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Class), ]
+
+# View the first few hits
+head(matches)
+
+# No orphans found
+# [1] Domain  Phylum  Class   Order   Family  Genus   Species
+# <0 rows> (or 0-length row.names)
+
+
+############### Do not complete the following:
+## Run the function to clean orphaned letters from class
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+# 
+# 
+# results <- lpsn_utils$clean_orphaned_letters(
+#   df_trimmed,     # data frame
+#   "Class",      # column name
+#   max_letters = 3 # max number of sequential UPPERCASE letters
+#   )
+# 
+# # number of orphaned letters found
+# 
+# 
+# # Report of changes
+# report_class <- results$report
+# 
+# # Quick look at the top of the report in the console
+# utils::head(report_class)
+# 
+# 
+# 
+# # assign the updated data to the original dataframe
+# df_trimmed <- results$data
+# 
+# # check specific row number to confirm change. eg row index 1752
+# print(df_trimmed)[1752,]
+# 
+# 
+# # save report as csv if needed - as a log of changes from function
+# utils::write.csv(
+#   report_class,
+#   file = "class_cleaning_report.csv",
+#   row.names = FALSE
+# )
+
+################### continue from here
+
+# check for short taxa names and taxa with numbers
+
+class_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Class",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "class_suspicious_taxa.csv"
+)
+
+# 8 suspicious unique taxa identified in 'Class'.
+
+# list unique instances of suspicious taxa
+# Please NOTE: taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_cla <- unique(class_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_cla, sep = "\n")
+
+# CLD3
+# FAC87
+# UBA11346
+# UBA2428
+# UBA4738
+# UBA5829
+# UBA727
+
+
+# add the changes to the list and run function to clean names
+# add unclassified
+class_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "CLD3" = "",
+  "FAC87" = "",
+  "UBA11346" = "",
+  "UBA2428" = "",
+  "UBA4738" = "",
+  "UBA5829" = "",
+  "UBA727" = "",
+  "Unclassified" = ""
+)
+
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = class_map,
+   column = "Class"
+)
+
+# Column [Class]: 36 names updated
+
+# check the changes
+result$report
+#      
+#   Column     Original Updated
+# 1  Class Unclassified        
+# 2  Class      UBA5829        
+# 3  Class      UBA4738        
+# 4  Class        FAC87        
+# 5  Class       UBA727        
+# 6  Class     UBA11346        
+# 7  Class         CLD3        
+# 8  Class      UBA2428       
+
+# Update table
+df_trimmed <- result$data
+
+# # second pass
+unique_cla2 <- unique(df_trimmed$Class)
+
+# I want the list printed with no row index:
+cat(unique_cla2, sep = "\n")
+
+# Bacteroidia
+# Planctomycetia
+# Bacilli
+# Thermoleophilia
+# Alphaproteobacteria
+# Blastocatellia
+# Flavobacteriia
+# Abditibacteria
+# Gemmatimonadetes
+# Gammaproteobacteria
+# Chitinophagia
+# Deinococci
+# Anaerolineae
+# Verrucomicrobiae
+# Actinomycetia
+# Actinobacteria
+# Vicinamibacteria
+# 
+# Cyanobacteriia
+# Phycisphaerae
+# Myxococcia
+# Deltaproteobacteria
+# Chloroflexia
+# Bdellovibrionia
+# Clostridia
+# Thermoanaerobaculia
+# Cytophagia
+# Polyangia
+# Rhodothermia
+# Armatimonadia
+# Limnocylindria
+# Lokiarchaeia
+# Nitrospiria
+# Longimicrobia
+# Caldilineae
+# Rubrobacteria
+# Acidobacteriia
+# Acidobacteriae
+# Acidimicrobiia
+# Bradymonadia
+# Nitriliruptoria
+# Saccharimonadia
+# Fibrobacteria
+# Betaproteobacteria
+# Desulfuromonadia
+# Oligoflexia
+# Negativicutes
+# Sumerlaeia
+# Thermincolia
+# Dehalococcoidia
+# Nitrospira
+# Binatia
+# Desulfitobacteriia
+# Kapabacteria
+# Sericytochromatia
+# Elusimicrobia
+# Symbiobacteriia
+# Bacteriovoracia
+# Methylomirabilia
+
+# no weird classes -  no further cleaning required
+
+# save class updated object
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.class.fixed.rds")
+
+```
+
+
+
+### STEP 7: Clean Phylum column 
+
+Check if any single, double or triple string in phylum column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any phylum with numbers in the name (e.g. placeholder names)
+
+```{r}
+# load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.class.fixed.rds")
+
+# find taxa with orphans
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Phylum), ]
+
+# View the first few hits
+head(matches)
+
+# no orphans found
+# [1] Domain  Phylum  Class   Order   Family  Genus   Species
+# <0 rows> (or 0-length row.names)
+
+############### Do not complete the following:
+## Run the function to clean orphaned letters from phylum
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+# 
+# results <- lpsn_utils$clean_orphaned_letters(
+#   df_trimmed,     # data frame
+#   "Phylum",      # column name
+#   max_letters = 3 # max number of sequential UPPERCASE letters
+#   )
+# 
+# # number of orphaned letters found
+# 
+# 
+# # Report of changes
+# report_phylum <- results$report
+# 
+# # Quick look at the top of the report in the console
+# utils::head(report_phylum)
+# 
+# 
+# 
+# # assign the updated data to the original dataframe
+# df_trimmed <- results$data
+# 
+# # check specific row number to confirm change. eg row index 1752
+# print(df_trimmed)[1752,]
+# 
+# 
+# # save report as csv if needed - as a log of changes from function
+# utils::write.csv(
+#   report_phylum,
+#   file = "phylum_cleaning_report.csv",
+#   row.names = FALSE
+# )
+
+################### continue from here
+
+# check for short taxa names and taxa with numbers
+
+phylum_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Phylum",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "phylum_suspicious_taxa.csv"
+)
+
+# 3 suspicious unique taxa identified in 'Phylum'.
+
+# list unique instances of suspicious taxa
+# Please NOTE: taxa can be prefixed with Candidatus, 
+# so the list returned should be checked before taxa names are changed
+unique_phy <- unique(phylum_check$report$Taxon)
+
+# I want the list printed with no row index:
+cat(unique_phy, sep = "\n")
+
+# CLD3
+# candidate_division_WPS-1
+#
+
+# add the changes to the list and run function to clean names
+# add unclassified
+phylum_map <- c(
+  # format to use  "original_name" = "correct_name"
+  # to remove that entry use "original_name" = ""
+  "CLD3" = "",
+  "candidate_division_WPS-1" = "",
+  "Unclassified" = ""
+)
+
+result <- lpsn_utils$clean_taxonomy_with_log(
+  df = df_trimmed,
+  mappings = phylum_map,
+   column = "Phylum"
+)
+
+# Column [Phylum]: 3 names updated.
+
+# check the changes
+result$report
+
+#   Column                 Original Updated
+# 1 Phylum candidate_division_WPS-1        
+# 2 Phylum             Unclassified        
+# 3 Phylum                     CLD3          
+
+# Update table
+df_trimmed <- result$data
+
+# # second pass
+unique_phy2 <- unique(df_trimmed$Phylum)
+
+# I want the list printed with no row index:
+cat(unique_phy2, sep = "\n")
+
+# Bacteroidota
+# Planctomycetota
+# Firmicutes
+# Actinobacteria
+# Proteobacteria
+# Acidobacteriota
+# Bacteroidetes
+# Armatimonadota
+# Gemmatimonadota
+# Deinococcota
+# Chloroflexota
+# Verrucomicrobiota
+# Actinobacteriota
+# 
+# Cyanobacteria
+# Myxococcota
+# Armatimonadetes
+# Bdellovibrionota
+# Planctomycetes
+# Asgardarchaeota
+# Nitrospirota
+# Gemmatimonadetes
+# Chloroflexi
+# Acidobacteria
+# Patescibacteria
+# Fibrobacterota
+# Deinococcus-Thermus
+# Desulfobacterota
+# Rhodothermaeota
+# Sumerlaeota
+# Nitrospirae
+# Elusimicrobiota
+# Methylomirabilota
+# Verrucomicrobia
+
+# no weird phyla -  no further cleaning required
+
+# save phylum updated object
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.phylum.fixed.rds")
+
+```
+
+
+### STEP 8: Clean Domain column 
+
+Check if any single, double or triple string in domain column.
+Look for a space, exactly one uppercase letter, followed by a space or the end of the string
+Check taxa and remove any domain with numbers in the name (e.g. placeholder names)
+
+
+```{r}
+# load data
+df_trimmed <- readRDS(df_trimmed, file = "./objects/taxonomy.phylum.fixed.rds")
+
+# find taxa with orphans
+
+matches <- df_trimmed[grepl("(^| )[A-Z]{1,3}( |$)", df_trimmed$Domain), ]
+
+# View the first few hits
+head(matches)
+
+# no orphans
+# [1] Domain  Phylum  Class   Order   Family  Genus   Species
+# <0 rows> (or 0-length row.names)
+
+
+############### Do not complete the following:
+## Run the function to clean orphaned letters from domain
+# arguments: df, target_col, max_letters = 3
+  
+# Regex components:
+# (^| ) specifies the start of the string OR a space before the letters.
+# [A-Z]{1,3} Matches: one, two or 3 UPPERCASE letters
+# ( |$) Requires the letters to be followed by either a space or end of string
+
+#### Detection example
+  # | Text              | Detected? |
+  # | ----------------- | --------- |
+  # | `"Bacteria A"`    | Yes       |
+  # | `"A Bacteria"`    | Yes       |
+  # | `"Bacteria AB"`   | Yes       |
+  # | `"Bacteria ABC"`  | Yes       |
+  # | `"Bacteria ABCD"` | No        |
+  # | `"Bacteria abc"`  | No        |
+
+# 
+# results <- lpsn_utils$clean_orphaned_letters(
+#   df_trimmed,     # data frame
+#   "Domain",      # column name
+#   max_letters = 3 # max number of sequential UPPERCASE letters
+#   )
+# 
+# # number of orphaned letters found
+# 
+# 
+# # Report of changes
+# report_domain <- results$report
+# 
+# # Quick look at the top of the report in the console
+# utils::head(report_domain)
+# 
+# 
+# 
+# # assign the updated data to the original dataframe
+# df_trimmed <- results$data
+# 
+# # check specific row number to confirm change. eg row index 1752
+# print(df_trimmed)[1752,]
+# 
+# 
+# # save report as csv if needed - as a log of changes from function
+# utils::write.csv(
+#   report_domain,
+#   file = "domain_cleaning_report.csv",
+#   row.names = FALSE
+# )
+
+################### continue from here
+
+# check for short taxa names and taxa with numbers
+
+domain_check <- lpsn_utils$find_suspicious_taxa(
+    df = df_trimmed,
+    target_col = "Domain",
+    min_letters = 7,
+    export_csv = TRUE,
+    file = "domain_suspicious_taxa.csv"
+)
+
+# 0 suspicious unique taxa identified in 'Domain'
+# no need to run change function
+
+# Confirm existing domain names
+unique(df_trimmed$Domain)
+# [1] "Bacteria" "Archaea" 
+
+
+
+# no weird domains -  no cleaning required
+
+# save domain updated object - all levels have been cleaned of odd names
+
+saveRDS(df_trimmed, file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+
+```
+
+
+
+## Prepare unique list for search
+
+Prepare list of unique taxonomic names for each level that will combined and used used to search LPSN. You can use the data returned from the unique list to make any 
+
+### Check Unique domains
+
+Domain should be a single name- no valid domains contain numbers
+
+```{r}
+
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+## check unique values for each taxonomic level
+sort(unique(df_trimmed$Domain))
+#  [1] "Archaea"    "Bacteria"
+
+## count ASVs in each domain
+table(df_trimmed[, "Domain"])
+
+ # Archaea Bacteria 
+ #       1     1079 
+ # 
+
+```
+
+
+
+
+### Check unique phyla
+
+Phyla should be a single name- no valid phyla contain numbers
+
+```{r}
+
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+phylum_list <- sort(unique(df_trimmed$Phylum))
+length(phylum_list)
+# [1] 34
+
+head(phylum_list)
+# [1] ""                 "Acidobacteria"    "Acidobacteriota"  "Actinobacteria"   "Actinobacteriota"
+# [6] "Armatimonadetes" 
+
+
+```
+
+
+
+### Check unique classes
+
+Should not contain numbers
+
+```{r}
+
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+class_list <- sort(unique(df_trimmed$Class))
+length(class_list)
+# [1] 59
+
+
+head(class_list)
+
+# [1] ""               "Abditibacteria" "Acidimicrobiia" "Acidobacteriae" "Acidobacteriia" "Actinobacteria"
+
+```
+
+
+### Check unique orders
+
+```{r}
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+order_list <- sort(unique(df_trimmed$Order))
+length(order_list)
+# [1] 115
+
+head(order_list)
+# [1] ""                  "Abditibacteriales" "Acetivibrionales"  "Acetobacterales"   "Acidimicrobiales" 
+# [6] "Acidobacteriales" 
+
+```
+
+
+
+
+
+### Check unique families
+
+```{r}
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+family_list <- sort(unique(df_trimmed$Family))
+length(family_list)
+# [1] 176
+
+head(family_list)
+# [1] ""                   "Abditibacteriaceae" "Acetobacteraceae"   "Acidimicrobiaceae"  "Acidobacteriaceae" 
+# [6] "Aestuariivirgaceae"
+
+
+```
+
+
+### Check unique genera
+
+```{r}
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+genus_list <- sort(unique(df_trimmed$Genus))
+length(genus_list)
+# [1] 338
+
+head(genus_list)
+# [1] ""                "Abditibacterium" "Acetoanaerobium" "Acidibacter"     "Acidisphaera"    "Aciditerrimonas"
+
+```
+
+
+### Check unique species (genera and species)
+
+
+```{r}
+## load data
+df_trimmed <- readRDS(file = "./objects/taxonomy.all.odd.taxa.cleaned.rds")
+
+# Extract taxonomic level
+species_list <- sort(unique(df_trimmed$Species))
+length(species_list)
+# [1] 550
+
+
+head(species_list) 
+
+# [1] ""                              "Abditibacterium utsteinense"  
+# [3] "Acetoanaerobium sticklandii"   "Acidibacter ferrireducens"    
+# [5] "Acidisphaera rubrifaciens"     "Aciditerrimonas ferrireducens"
+
+```
+
+
+
+
+
+```{r}
+
+## combine all taxa
+combined_taxa <- c(phylum_list,class_list, order_list, family_list, genus_list, species_list)
+
+
+# save combined list
+saveRDS(combined_taxa, file = "./objects/combined.unique.taxa.list.rds")
+
+```
+
+
+# LSPN API
+
+Register with  the LPSN site and record the login email and password used
+https://sso.dsmz.de/auth/realms/DSMZ/login-actions/registration?client_id=api.lpsn&tab_id=4jgxLa3kKA8 
+
+Ensure your .Renviron file contains the fields below to enable login and not record password in the script. Info on modifying .Renviron file: https://docs.posit.co/ide/user/ide/guide/environments/r/managing-r.html 
+
+Format needed for LPSN login:
+DSMZ_API_USER = <email>
+DSMZ_API_PASSWORD = <password>
+
+
+
+## Run API search function- with ranks
+
+
+```{r}
+
+## rolling ETA
+## Test taxa lists - API cannot return candidatus taxa, or old phyla at the moment
+
+
+phylum_list <- c(
+  "Abawacabacteria", # FAIL API LIMIT misspelling, Pro-correct name: "Candidatus Abawacaibacteriota" (P) 
+  "Candidatus Aenigmarchaeota", # FAIL API LIMIT misspelling, pro-correct name Candidatus Aenigmatarchaeota (P)
+  "Glutamicibacillocter", # FAIL does not exist
+  "Bacteroidetes", # FAIL API LIMIT synonym, Correct name: Bacteroidota (P)
+  "Proteobacteria", # FAIL API LIMIT Correct name: Pseudomonadota (P)
+  "Anaerolineae", # FAIL correct name but wrong level(c)
+  "Verrucomicrobiota" # PASS Verrucomicrobiota (P)
+)
+
+
+class_list <- c(
+  "Bacilli", # PASS correct name (C)
+  "Prochlorophyceae", # PASS synonym
+  "Bacillati", # FAIL  wrong level (K)
+  "Asgardarchaeia", # FAIL API LIMIT preferred name: Candidatus Asgardarchaeia (C)  *****Failed
+  "Candidatus Absconditicoccus", # FAIL API LIMIT preferred name, wrong level (G)  -as expected
+  "Bacillus", # FAIL wrong level (G)  -as expected
+  "Deltabacteria", #PASS synonym,  Correct name: Deltaproteobacteria (C) 
+  "Glutamicibacillocter", # FAIL does not exist
+  "Prochlorophyceae", # synonym (and no standing), Correct name: Chroococcophycea (C) 
+  "Clostridia",
+  "Ancaeobacteria", # preferred name: Candidatus Ancaeobacteria (C) ****Failed
+  "Anaerolineae" # correct name (c)
+)
+
+
+order_list <- c(
+  "Candidatus Mcinerneyibacteriales", # inaccurate spelling (C)
+  "Clostridiales",#  synonym, Correct name: Eubacteriales (O)
+  "Absconditicoccus", # preferred name Candidatus Absconditicoccus, wrong level (G)
+  "Glutamicibacillocter", # does not exist
+  "Eubacteriales", # correct name (O)
+  "ubacteriales", # misspelling (O)
+  "Oscillatoriales", # order 3:synonym, synonym, correct name
+  "Candidatus Macinerneyibacteriales" # pro-correct name (C)
+)
+
+
+family_list <- c(
+  "Bacillaceae", #correct name (F)
+  "Lactobacteriaceae", # preferred name (F)
+  "Prochlorophyceae", # synonym and wrong level, Correct name: Chroococcophycea (C) 
+  "Candidatus Fervidibacterota", # wrong level and synonym, Correct name: Armatimonadota (P)
+  "Glutamicibacillocter", # does not exist
+  "Blastocatellaceae", #correct name (F)
+  "Acidilutibacteraceae" # correct name (F)
+)
+
+
+genus_list <- c(
+  "Glycocaulis", # correct name (G)
+  "Porifericola", # preferred name (G)
+  "Clostridium", # correct name (G)
+  "Curtissbacteria", # misspelling, wrong level, Pro-correct name: "Candidatus Curtissiibacteriota" (P)
+  "Glutamicicillocter", # does not exist
+  "Schlegelella", # Correct name: Caldimonas (G)                    
+  "Salmonella" # correct name (G)
+)
+
+species_list <- c(
+  "Bacillus cereus",# correct name (GS)
+  "Salmonella", # wrong level (G)
+  "Clostridium botulinum",# correct name (GS)
+  "Bacillus botulinus", # synonym of Clostridium botulinum (GS)
+  "Bacillus cereus subsp. mycoides", # wrong level (GSs)
+  "Zwartia vadi", # correct name (GS)
+  "Acidilutibacter cellobiosedens" # correct name (GS)
+
+)
+
+# create a list of the level vectors
+# do not need to have all levels, will only send the taxa and levels saved in the list
+
+taxa_input <- list(
+  phylum = phylum_list,
+  class = class_list,
+  order = order_list,
+  family = family_list,
+  genus = genus_list,
+  species = species_list
+)
+
+
+# Output directory structure
+CSV_DIR <- "./results/lpsn_levels/csv_lineages"
+WB_PATH <- "./results/lpsn_levels/LPSN_result_Master.xlsx"
+LOG_DIR <- "./results/lpsn_levels/logs"
+
+
+# search function
+# lpsn_utils$lpsn_levels_min_err(
+lpsn_utils$lpsn_by_rank_search(
+  taxa_input     = taxa_input,
+  csv_path       = CSV_DIR,
+  workbook_path  = WB_PATH,
+  log_path       = LOG_DIR,
+  batch_size     = 100,
+  pause_min      = 0.5,
+  pause_max      = 1.5,
+  use_timestamp  = TRUE
+)
+
+
+# Checking LPSN credentials...
+# 
+# LPSN login successful. Credentials verified.
+# 
+# Total input taxa: 48
+# 
+# Total unique taxa after preprocessing: 47
+# 
+# LPSN search started: 2026-09-07 23:50:43
+# 
+# [---------]   4% | 2/47 | Candidatus Aenigmarchaeota ........ NOT FOUND | Search Avg: 3.4s | Finish: 2026-09-07 23:53:24
+# 
+# LPSN Run Complete at: 2026-09-07 23:55:26
+# Total time elapsed: 4.70909 mins
+# Total unique taxa processed: 47
+# Total batches: 1
+
+```
+
+
+
+## Run API search function- no ranks
+
+
+This search takes longer than using level-specific lists. Good to use for smaller lists.
+
+
+```{r}
+# usage example
+
+
+taxa_names <- c(
+  "Schlegelella", # Correct name: Caldimonas (G)                    
+  "Salmonella", # correct name (G)
+  "Bacillus cereus",# correct name (GS)
+  "Salmonella", # wrong level (G)
+  "Clostridium botulinum",# correct name (GS)
+  "Bacillus botulinus", # synonym of Clostridium botulinum (GS)
+  "Bacillus cereus subsp. mycoides", # wrong level (GSs)
+  "Abawacabacteria", # FAIL API LIMIT misspelling, Pro-correct name: "Candidatus Abawacaibacteriota" (P) 
+  "Candidatus Aenigmarchaeota", # FAIL API LIMIT misspelling, pro-correct name Candidatus Aenigmatarchaeota (P)
+  "Glutamicibacillocter", # FAIL does not exist
+  "Bacteroidetes", # FAIL API LIMIT synonym, Correct name: Bacteroidota (P)
+  "Clostridia",
+  "Ancaeobacteria", # preferred name: Candidatus Ancaeobacteria (C) ****Failed
+  "Anaerolineae", # correct name (c)
+  "Candidatus Mcinerneyibacteriales", # inaccurate spelling (C)
+  "Clostridiales",#  synonym, Correct name: Eubacteriales (O)
+  "Lactobacteriaceae", # preferred name (F)
+  "Prochlorophyceae", # synonym and wrong level, Correct name: Chroococcophycea (C) 
+  "Candidatus Fervidibacterota", # wrong level and synonym, Correct name: Armatimonadota (P)
+  "Glutamicibacillocter", # does not exist
+  "Blastocatellaceae", #correct name (F)
+  "Proteobacteria", # FAIL API LIMIT Correct name: Pseudomonadota (P)
+  "Anaerolineae", # FAIL correct name but wrong level(c)
+  "Verrucomicrobiota", # PASS Verrucomicrobiota (P)
+  "Bacilli", # PASS correct name (C)
+  "Prochlorophyceae", # PASS synonym
+  "Bacillati", # FAIL  wrong level (K)
+  "Zwartia vadi", # correct name (GS)
+  "Asgardarchaeia", # FAIL API LIMIT preferred name: Candidatus Asgardarchaeia (C)  *****Failed
+  "Candidatus Absconditicoccus", # FAIL API LIMIT preferred name, wrong level (G)  -as expected
+  "Bacillus", # FAIL wrong level (G)  -as expected
+  "Absconditicoccus", # preferred name Candidatus Absconditicoccus, wrong level (G)
+  "Glutamicibacillocter", # does not exist
+  "Eubacteriales", # correct name (O)
+  "ubacteriales", # misspelling (O)
+  "Oscillatoriales", # order 3:synonym, synonym, correct name
+  "Candidatus Macinerneyibacteriales", # pro-correct name (C)
+  "Bacillaceae", #correct name (F)
+  "Deltabacteria", #PASS synonym,  Correct name: Deltaproteobacteria (C) 
+  "Glutamicibacillocter", # FAIL does not exist
+  "Prochlorophyceae", # synonym (and no standing), Correct name: Chroococcophycea (C)   "Acidilutibacteraceae", # correct name (F)
+  "Glycocaulis", # correct name (G)
+  "Porifericola", # preferred name (G)
+  "Clostridium", # correct name (G)
+  "Curtissbacteria", # misspelling, wrong level, Pro-correct name: "Candidatus Curtissiibacteriota" (P)
+  "Glutamicicillocter", # does not exist
+  "Acidilutibacter cellobiosedens" # correct name (GS)
+)
+
+
+# Output directory structure
+CSV_DIR <- "./results/lpsn_nolevels/csv_lineages"
+WB_PATH <- "./results/lpsn_nolevels/LPSN_result_Master.xlsx"
+LOG_DIR <- "./results/lpsn_nolevels/logs"
+
+result <- lpsn_utils$lpsn_no_rank_search(
+  taxa_names    = taxa_names,
+  csv_path      = CSV_DIR,
+  workbook_path = WB_PATH,
+  log_path      = LOG_DIR
+)
+
+
+# Checking LPSN credentials...
+# 
+# LPSN login successful. Credentials verified.
+# 
+# Total input taxa: 47
+# 
+# Total unique taxa after preprocessing: 40
+# 
+# LPSN search started: 2026-09-07 23:56:02
+# [>-----------------------]   2% | 1/40 | Schlegelella ........ SUCCESS | Search Avg: 24.6s | Finish: 2026-09-08 00:12:28
+# LPSN Run Complete at: 2026-09-08 00:06:05
+# Total time elapsed: 10.0457 mins
+# Total unique taxa processed: 40
+# Total batches: 1
+
+
+
+
+```
+
+
+
+
+### Combine log files
+This file lists all the taxa that were not found  - these taxa can be searched for using the LPSN site or other database as suitable.
+The placeholder names from various databases end up here as they do not exist in the official lineage
+
+
+```{r}
+
+# set location of log files to combined and where the output should be
+
+log_dir <- "./results/XXXX/logs"
+output_file <- "./results/all_missing_taxa.txt"
+
+# List all .txt files in the directory
+files <- list.files(path = log_dir, pattern = "\\.txt$", full.names = TRUE)
+
+# Read all files into a single list, merge, and save
+merged_content <- files |>
+  # Read each file as a character vector
+  lapply(readLines, warn = FALSE) |>
+  # Flatten the list into one long vector
+  unlist() |>
+  # Optional: Remove any empty strings and duplicates
+  unique() |>
+  (\(x) x[x != ""])() |>
+  # Sort alphabetically
+  sort()
+
+# Write the final combined file
+writeLines(merged_content, output_file)
+
+message("Merged ", length(files), " files into: ", output_file)
+
+# Merged 47 files into: /results/all_missing_taxa.txt
+
+```
+
+
+
+### Combine all batch results into a single file
+
+```{r}
+library(openxlsx)
+library(dplyr)
+
+# Set input and output files
+input_workbook <- "./results/LPSN_result_Master_20260422_1514.xlsx"
+output_csv     <- "./results/LPSN_Master_Combined.csv"
+
+# Get names of all sheets in the workbook
+sheet_names <- openxlsx::getSheetNames(input_workbook)
+
+# Read, convert to character, and combine
+combined_data <- sheet_names |>
+  lapply(\(s) {
+    df <- openxlsx::read.xlsx(input_workbook, sheet = s)
+    # Convert every column to character to prevent type mismatch
+    df |> dplyr::mutate(across(everything(), as.character))
+  }) |>
+  dplyr::bind_rows()
+
+# Save to CSV (or use sep = "\t" for TSV)
+write.csv(combined_data, output_csv, row.names = FALSE)
+
+message("Successfully combined ", length(sheet_names), " sheets into: ", output_csv)
+
+# Successfully combined 47 sheets into: XXXXX/results/LPSN_Master_Combined_XXXX.csv
+
+```
+
+
+### Process automated taxonomy lineage update - lookup
+
+A new table is created that uses the returned LPSN names and maps them to the original taxonomy table containing ASVs. The result is Final_Taxonomy_Matched.csv which contains the ASVs, the original lineage, then a column indicating which term in the lineage was matched in the LPSN database and all upstream levels.
+
+This file allows you to check manually & curate the taxonomic lineage as desired. The file used needs to be split into the taxonomic lineage levels.
+You can choose to use the taxonomic file that has been cleaned of formatting errors or just the file that has been split without cleaning. 
+
+```{r}
+
+###### usage example
+# Define Paths and file names
+master_file <- "./results/LPSN_Master_Combined.csv"
+tax_file    <- "./taxonomy_pre_LPSN.csv" # the taxa file to use as original copy
+result_file <- "./Final_Taxonomy_Matched.csv"
+
+#Define Custom Ranks/Columns (Optional) ---
+# You can provide these in any case (lower, UPPER, Sentence)
+
+# rank order to check
+my_check_ranks <- c("species", "genus", "family", "order", "class", "phylum", "kingdom")
+
+# columns from the LPSN master file to add to the taxonomy file
+my_append_cols <- c("domain", "kingdom", "phylum", "class", "order", "family", "genus", "species")
+
+#call and Run the Function ---
+lpsn_utils$process_taxonomy_lookup(
+  master_path = master_file,
+  taxonomy_path = tax_file,
+  output_path = result_file,
+  check_ranks = my_check_ranks, # Now an input
+  append_cols = my_append_cols  # Now an input
+)
+
+# Done. Results in: XXXXX/Final_Taxonomy_Matched.csv
+```
+
+
+# Testing the API connection
+
+Open and use the tests in "LPSN - testing the connection.R" script to identify if there are connection, fetch or retrieval issues.
+
+
+
+
+# LPSN Citation
+
+```{r}
+
+citation(package = "LPSN")
+
+```
+
